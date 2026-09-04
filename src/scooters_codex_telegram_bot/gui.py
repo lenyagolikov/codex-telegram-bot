@@ -93,6 +93,8 @@ def launch_gui(config_path: Path | None = None) -> None:
             self.service = ServiceManager(selected_config_path)
             self.variables: dict[str, tk.Variable] = {}
             self.action_buttons: list[ctk.CTkButton] = []
+            self.edit_widgets: list[tk.Entry | tk.Text] = []
+            self.context_edit_widget: tk.Entry | tk.Text | None = None
             self.status_label: ctk.CTkLabel
             self.token_entry: ctk.CTkEntry
             self.run_mode = tk.StringVar(
@@ -454,6 +456,7 @@ def launch_gui(config_path: Path | None = None) -> None:
                 fg_color=FIELD_BACKGROUND,
             )
             self.token_entry.grid(row=0, column=0, sticky="ew")
+            self._register_edit_widget(self.token_entry)
             ctk.CTkButton(
                 field,
                 text="Показать",
@@ -496,6 +499,7 @@ def launch_gui(config_path: Path | None = None) -> None:
                 padx=14,
                 pady=8,
             )
+            self._register_edit_widget(entry)
             if suffix:
                 ctk.CTkLabel(parent, text=suffix, text_color=MUTED).grid(
                     row=row, column=2, sticky="w", padx=(0, 14)
@@ -528,6 +532,7 @@ def launch_gui(config_path: Path | None = None) -> None:
                 fg_color=FIELD_BACKGROUND,
             )
             entry.grid(row=row, column=1, sticky="ew", padx=14, pady=8)
+            self._register_edit_widget(entry)
 
             def browse() -> None:
                 if choose_directory:
@@ -667,9 +672,30 @@ def launch_gui(config_path: Path | None = None) -> None:
         def _toggle_token(self) -> None:
             self.token_entry.configure(show="" if self.token_entry.cget("show") else "•")
 
+        def _register_edit_widget(self, widget) -> None:
+            editable = self._editable_widget(widget)
+            if editable is not None:
+                self.edit_widgets.append(editable)
+
         def _install_edit_support(self) -> None:
-            modifier = "Command" if sys.platform == "darwin" else "Control"
-            root.bind_all(f"<{modifier}-KeyPress>", self._handle_edit_shortcut)
+            modifiers = ["Control"]
+            if sys.platform == "darwin":
+                modifiers.insert(0, "Command")
+            for widget in self.edit_widgets:
+                for modifier in modifiers:
+                    widget.bind(
+                        f"<{modifier}-KeyPress>",
+                        self._handle_edit_shortcut,
+                        add="+",
+                    )
+                widget.bind("<Button-2>", self._show_edit_context_menu, add="+")
+                widget.bind("<Button-3>", self._show_edit_context_menu, add="+")
+                if sys.platform == "darwin":
+                    widget.bind(
+                        "<Control-Button-1>",
+                        self._show_edit_context_menu,
+                        add="+",
+                    )
 
             accelerator = "⌘" if sys.platform == "darwin" else "Ctrl+"
             menu_bar = tk.Menu(root)
@@ -699,21 +725,54 @@ def launch_gui(config_path: Path | None = None) -> None:
             root.configure(menu=menu_bar)
             self._menu_bar = menu_bar
 
+            context_menu = tk.Menu(root, tearoff=False)
+            context_menu.add_command(
+                label="Вырезать",
+                command=lambda: self._perform_edit_action("cut", from_context=True),
+            )
+            context_menu.add_command(
+                label="Копировать",
+                command=lambda: self._perform_edit_action("copy", from_context=True),
+            )
+            context_menu.add_command(
+                label="Вставить",
+                command=lambda: self._perform_edit_action("paste", from_context=True),
+            )
+            context_menu.add_separator()
+            context_menu.add_command(
+                label="Выбрать всё",
+                command=lambda: self._perform_edit_action(
+                    "select_all", from_context=True
+                ),
+            )
+            self._context_menu = context_menu
+
         def _handle_edit_shortcut(self, event):
-            # Tk already handles Latin shortcuts for native Entry/Text widgets.
-            # The fallback below is needed for non-Latin keyboard layouts, where
-            # macOS reports the physical key through keycode instead of a/c/v/x.
-            if event.keysym.lower() in {"a", "c", "v", "x"}:
-                return None
             action = _shortcut_action(event.keysym, event.keycode, sys.platform)
             if action is None:
                 return None
             return self._apply_edit_action(event.widget, action)
 
-        def _perform_edit_action(self, action: str) -> None:
-            widget = root.focus_get()
+        def _show_edit_context_menu(self, event):
+            widget = self._editable_widget(event.widget)
+            if widget is None:
+                return None
+            self.context_edit_widget = widget
+            widget.focus_set()
+            try:
+                self._context_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self._context_menu.grab_release()
+            return "break"
+
+        def _perform_edit_action(
+            self, action: str, *, from_context: bool = False
+        ) -> None:
+            widget = self.context_edit_widget if from_context else root.focus_get()
             if widget is not None:
                 self._apply_edit_action(widget, action)
+            if from_context:
+                self.context_edit_widget = None
 
         @staticmethod
         def _editable_widget(widget):
