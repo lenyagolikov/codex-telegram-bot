@@ -23,6 +23,21 @@ CARD_BACKGROUND = ("#FFFFFF", "#171A22")
 FIELD_BACKGROUND = ("#F7F8FB", "#20242E")
 
 
+def _shortcut_action(keysym: str, keycode: int, platform: str) -> str | None:
+    actions = {"a": "select_all", "c": "copy", "v": "paste", "x": "cut"}
+    if action := actions.get(keysym.lower()):
+        return action
+    platform_keycodes = {
+        "darwin": {0: "select_all", 8: "copy", 9: "paste", 7: "cut"},
+        "win32": {65: "select_all", 67: "copy", 86: "paste", 88: "cut"},
+    }
+    keycodes = platform_keycodes.get(
+        platform,
+        {38: "select_all", 54: "copy", 55: "paste", 53: "cut"},
+    )
+    return keycodes.get(keycode)
+
+
 def launch_gui(config_path: Path | None = None) -> None:
     try:
         import tkinter as tk
@@ -334,6 +349,7 @@ def launch_gui(config_path: Path | None = None) -> None:
                 fg_color=FIELD_BACKGROUND,
             )
             self.token_entry.grid(row=0, column=0, sticky="ew")
+            self._bind_edit_shortcuts(self.token_entry)
             ctk.CTkButton(
                 field,
                 text="Показать",
@@ -376,6 +392,7 @@ def launch_gui(config_path: Path | None = None) -> None:
                 padx=14,
                 pady=8,
             )
+            self._bind_edit_shortcuts(entry)
             if suffix:
                 ctk.CTkLabel(parent, text=suffix, text_color=MUTED).grid(
                     row=row, column=2, sticky="w", padx=(0, 14)
@@ -405,6 +422,7 @@ def launch_gui(config_path: Path | None = None) -> None:
                 fg_color=FIELD_BACKGROUND,
             )
             entry.grid(row=row, column=1, sticky="ew", padx=14, pady=8)
+            self._bind_edit_shortcuts(entry)
 
             def browse() -> None:
                 if choose_directory:
@@ -543,6 +561,46 @@ def launch_gui(config_path: Path | None = None) -> None:
 
         def _toggle_token(self) -> None:
             self.token_entry.configure(show="" if self.token_entry.cget("show") else "•")
+
+        def _bind_edit_shortcuts(self, entry) -> None:
+            entry.bind("<Control-KeyPress>", self._handle_edit_shortcut)
+            if sys.platform == "darwin":
+                entry.bind("<Command-KeyPress>", self._handle_edit_shortcut)
+
+        @staticmethod
+        def _handle_edit_shortcut(event):
+            action = _shortcut_action(event.keysym, event.keycode, sys.platform)
+            if action is None:
+                return None
+
+            widget = event.widget
+            if not isinstance(widget, tk.Entry):
+                return None
+            if action == "select_all":
+                widget.selection_range(0, tk.END)
+                widget.icursor(tk.END)
+                return "break"
+
+            if action in {"copy", "cut"}:
+                try:
+                    first = int(widget.index("sel.first"))
+                    last = int(widget.index("sel.last"))
+                except tk.TclError:
+                    return "break"
+                root.clipboard_clear()
+                root.clipboard_append(widget.get()[first:last])
+                if action == "cut":
+                    widget.delete(first, last)
+                return "break"
+
+            try:
+                clipboard_text = root.clipboard_get()
+            except tk.TclError:
+                return "break"
+            if widget.selection_present():
+                widget.delete("sel.first", "sel.last")
+            widget.insert(widget.index("insert"), clipboard_text)
+            return "break"
 
         @staticmethod
         def _change_appearance(value: str) -> None:
