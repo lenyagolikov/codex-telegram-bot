@@ -205,6 +205,10 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
             turn_start["input"],
             [{"type": "text", "text": "Проверь изменения в scooters-core"}],
         )
+        self.assertEqual(turn_start["cwd"], "/tmp")
+        self.assertEqual(turn_start["sandboxPolicy"]["type"], "workspaceWrite")
+        self.assertIn("/tmp", turn_start["sandboxPolicy"]["writableRoots"])
+        self.assertTrue(turn_start["sandboxPolicy"]["networkAccess"])
 
     async def test_voice_message_over_duration_limit_is_rejected(self) -> None:
         telegram = FakeTelegram()

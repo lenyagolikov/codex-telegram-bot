@@ -443,6 +443,8 @@ class TelegramCodexBot:
                 "threadId": thread_id,
                 "input": input_items,
                 "clientUserMessageId": f"telegram:{chat_id}:{message_id}",
+                "cwd": str(self._config.codex_cwd),
+                "sandboxPolicy": self._turn_sandbox_policy(),
             }
             if self._config.reasoning_effort is not None:
                 params["effort"] = self._config.reasoning_effort
@@ -517,6 +519,18 @@ class TelegramCodexBot:
 
     def _resume_thread_params(self, thread_id: str) -> dict[str, Any]:
         return {**self._common_thread_params(), "threadId": thread_id}
+
+    def _turn_sandbox_policy(self) -> dict[str, Any]:
+        writable_roots = [str(self._config.codex_cwd)]
+        arc_cache = Path.home() / ".arc"
+        if arc_cache.is_dir():
+            writable_roots.append(str(arc_cache.resolve()))
+        return {
+            "type": "workspaceWrite",
+            "writableRoots": writable_roots,
+            # Arc mounts communicate with their local process through localhost.
+            "networkAccess": True,
+        }
 
     def _remember_thread_status(self, response: dict[str, Any]) -> None:
         thread = response["thread"]
