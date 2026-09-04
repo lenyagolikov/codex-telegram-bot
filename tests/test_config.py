@@ -115,6 +115,19 @@ class ConfigTests(unittest.TestCase):
 
             self.assertEqual(config.telegram_token, "test-token")
 
+    def test_remote_validation_does_not_require_local_paths(self) -> None:
+        config = Config.from_mapping(
+            {
+                "TELEGRAM_BOT_TOKEN": "test-token",
+                "CODEX_BIN": "/remote/bin/codex",
+                "CODEX_CWD": "/remote/workspace",
+            },
+            validate_local_paths=False,
+        )
+
+        self.assertEqual(config.codex_bin, "/remote/bin/codex")
+        self.assertEqual(config.codex_cwd, Path("/remote/workspace"))
+
     def test_default_macos_log_path(self) -> None:
         with patch("scooters_codex_telegram_bot.config.sys.platform", "darwin"):
             self.assertEqual(

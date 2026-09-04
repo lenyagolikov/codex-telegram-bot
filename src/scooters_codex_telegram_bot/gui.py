@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import getpass
 import importlib.util
 import os
 import shutil
@@ -9,7 +10,15 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from .config import Config, ConfigError, default_config_path, read_dotenv, write_dotenv
+from .config import (
+    RUNTIME_CONFIG_KEYS,
+    Config,
+    ConfigError,
+    default_config_path,
+    read_dotenv,
+    write_dotenv,
+)
+from .remote import RemoteServiceManager, RemoteSettings
 from .secrets import SecretStoreError, read_telegram_token, store_telegram_token
 from .service import ServiceError, ServiceManager
 
@@ -86,7 +95,16 @@ def launch_gui(config_path: Path | None = None) -> None:
             self.action_buttons: list[ctk.CTkButton] = []
             self.status_label: ctk.CTkLabel
             self.token_entry: ctk.CTkEntry
+            self.run_mode = tk.StringVar(
+                value=(
+                    "На сервере"
+                    if self.values.get("RUN_MODE", "local") == "remote"
+                    else "Локально"
+                )
+            )
             self._build()
+            if self._is_remote():
+                self.tabs.set("Удалённый сервер")
             self._refresh_status()
 
         def _build(self) -> None:
@@ -126,6 +144,25 @@ def launch_gui(config_path: Path | None = None) -> None:
             self.appearance_menu.set("Система")
             self.appearance_menu.pack(side="right")
 
+            mode_bar = ctk.CTkFrame(page, fg_color="transparent")
+            mode_bar.pack(fill="x", pady=(0, 14))
+            ctk.CTkLabel(
+                mode_bar,
+                text="Где работает бот",
+                text_color=MUTED,
+                font=ctk.CTkFont(size=13, weight="bold"),
+            ).pack(side="left")
+            self.mode_selector = ctk.CTkSegmentedButton(
+                mode_bar,
+                values=["Локально", "На сервере"],
+                variable=self.run_mode,
+                command=self._change_run_mode,
+                selected_color=ACCENT,
+                selected_hover_color=ACCENT_HOVER,
+                height=36,
+            )
+            self.mode_selector.pack(side="right")
+
             content = ctk.CTkFrame(
                 page,
                 fg_color=CARD_BACKGROUND,
@@ -135,7 +172,7 @@ def launch_gui(config_path: Path | None = None) -> None:
             )
             content.pack(fill="both", expand=True)
 
-            tabs = ctk.CTkTabview(
+            self.tabs = ctk.CTkTabview(
                 content,
                 fg_color="transparent",
                 segmented_button_selected_color=ACCENT,
@@ -143,10 +180,12 @@ def launch_gui(config_path: Path | None = None) -> None:
                 segmented_button_unselected_hover_color=("#E9EAF2", "#303441"),
                 corner_radius=16,
             )
-            tabs.pack(fill="both", expand=True, padx=18, pady=(12, 6))
-            basic = tabs.add("Основные")
-            advanced = tabs.add("Дополнительно")
+            self.tabs.pack(fill="both", expand=True, padx=18, pady=(12, 6))
+            basic = self.tabs.add("Локальные настройки")
+            remote = self.tabs.add("Удалённый сервер")
+            advanced = self.tabs.add("Дополнительно")
             basic.grid_columnconfigure(1, weight=1)
+            remote.grid_columnconfigure(1, weight=1)
             advanced.grid_columnconfigure(1, weight=1)
 
             self._add_token_entry(basic, 0)
@@ -194,6 +233,78 @@ def launch_gui(config_path: Path | None = None) -> None:
                 anchor="w",
                 wraplength=690,
             ).grid(row=6, column=0, columnspan=3, sticky="ew", padx=14, pady=(18, 6))
+
+            self._add_entry(
+                remote,
+                0,
+                "SSH-хост",
+                "REMOTE_SSH_HOST",
+                hint="Например, host.example.net",
+            )
+            self._add_entry(
+                remote,
+                1,
+                "SSH-пользователь",
+                "REMOTE_SSH_USER",
+                default=getpass.getuser(),
+            )
+            self._add_entry(
+                remote,
+                2,
+                "SSH-порт",
+                "REMOTE_SSH_PORT",
+                default="22",
+            )
+            self._add_path_entry(
+                remote,
+                3,
+                "SSH-ключ",
+                "REMOTE_SSH_IDENTITY_FILE",
+                choose_directory=False,
+            )
+            self._add_entry(
+                remote,
+                4,
+                "Папка установки",
+                "REMOTE_INSTALL_DIR",
+                default="~/.local/share/scooters-codex-telegram-bot",
+            )
+            self._add_entry(
+                remote,
+                5,
+                "Рабочая папка Codex",
+                "REMOTE_CODEX_CWD",
+                default="~/arcadia",
+            )
+            self._add_entry(
+                remote, 6, "Команда Codex", "REMOTE_CODEX_BIN", default="codex"
+            )
+            self._add_entry(
+                remote,
+                7,
+                "Команда Python",
+                "REMOTE_PYTHON_BIN",
+                default="/usr/bin/python3",
+            )
+            self._button(
+                remote,
+                "Проверить подключение",
+                self._test_remote_connection,
+                secondary=True,
+                width=185,
+            ).grid(row=8, column=1, sticky="w", padx=14, pady=(16, 6))
+            ctk.CTkLabel(
+                remote,
+                text=(
+                    "На сервер передаются только runtime и настройки бота. "
+                    "Токен хранится там в файле с правами 600."
+                ),
+                text_color=MUTED,
+                font=ctk.CTkFont(size=12),
+                anchor="w",
+                justify="left",
+                wraplength=660,
+            ).grid(row=9, column=0, columnspan=3, sticky="ew", padx=14, pady=(10, 6))
 
             self._add_option(
                 advanced,
@@ -407,9 +518,12 @@ def launch_gui(config_path: Path | None = None) -> None:
             *,
             choose_directory: bool,
         ) -> None:
-            default = (
-                str(Path.home()) if key == "CODEX_CWD" else shutil.which("codex") or "codex"
-            )
+            if key == "CODEX_CWD":
+                default = str(Path.home())
+            elif key == "CODEX_BIN":
+                default = shutil.which("codex") or "codex"
+            else:
+                default = ""
             variable = tk.StringVar(value=self.values.get(key, default))
             self.variables[key] = variable
             self._field_label(parent, row, label)
@@ -607,8 +721,18 @@ def launch_gui(config_path: Path | None = None) -> None:
             modes = {"Система": "system", "Светлая": "light", "Тёмная": "dark"}
             ctk.set_appearance_mode(modes[value])
 
+        def _change_run_mode(self, value: str) -> None:
+            self.tabs.set(
+                "Удалённый сервер" if value == "На сервере" else "Локальные настройки"
+            )
+            self._refresh_status()
+
+        def _is_remote(self) -> bool:
+            return self.run_mode.get() == "На сервере"
+
         def _configuration_values(self) -> dict[str, str]:
             result = dict(self.values)
+            result["RUN_MODE"] = "remote" if self._is_remote() else "local"
             for key, variable in self.variables.items():
                 value = variable.get()
                 if isinstance(value, bool):
@@ -630,9 +754,28 @@ def launch_gui(config_path: Path | None = None) -> None:
             result.setdefault("VOICE_MAX_FILE_BYTES", str(20 * 1024 * 1024))
             return result
 
+        def _runtime_values(self, values: dict[str, str]) -> dict[str, str]:
+            runtime = {
+                key: values[key] for key in RUNTIME_CONFIG_KEYS if key in values
+            }
+            if self._is_remote():
+                runtime["CODEX_CWD"] = values.get("REMOTE_CODEX_CWD", "~/arcadia")
+                runtime["CODEX_BIN"] = values.get("REMOTE_CODEX_BIN", "codex")
+                read_roots = runtime.get("AUTO_APPROVE_READ_ROOTS", "").strip()
+                if not read_roots or read_roots == values.get("CODEX_CWD", "").strip():
+                    runtime["AUTO_APPROVE_READ_ROOTS"] = runtime["CODEX_CWD"]
+            return runtime
+
         def _validate(self, values: dict[str, str]) -> Config:
-            config = Config.from_mapping(values)
+            runtime = self._runtime_values(values)
+            config = Config.from_mapping(
+                runtime, validate_local_paths=not self._is_remote()
+            )
+            if self._is_remote():
+                RemoteSettings.from_mapping(values)
             if (
+                not self._is_remote()
+                and
                 config.voice_transcription_enabled
                 and importlib.util.find_spec("faster_whisper") is None
             ):
@@ -642,10 +785,12 @@ def launch_gui(config_path: Path | None = None) -> None:
                 )
             return config
 
-        def _save_configuration(self) -> Config:
+        def _save_configuration(self) -> tuple[Config, dict[str, str]]:
             values = self._configuration_values()
             config = self._validate(values)
-            token = values["TELEGRAM_BOT_TOKEN"]
+            runtime_values = self._runtime_values(values)
+            runtime_values["TELEGRAM_BOT_TOKEN"] = config.telegram_token
+            token = config.telegram_token
             try:
                 store_telegram_token(token)
             except SecretStoreError:
@@ -654,12 +799,12 @@ def launch_gui(config_path: Path | None = None) -> None:
                 values.pop("TELEGRAM_BOT_TOKEN", None)
             write_dotenv(selected_config_path, values)
             self.values = values
-            return config
+            return config, runtime_values
 
         def _save(self) -> None:
             try:
                 self._save_configuration()
-            except (ConfigError, OSError) as error:
+            except (ConfigError, ServiceError, OSError) as error:
                 messagebox.showerror("Ошибка настройки", str(error), parent=root)
                 return
             messagebox.showinfo(
@@ -670,30 +815,86 @@ def launch_gui(config_path: Path | None = None) -> None:
 
         def _save_and_start(self) -> None:
             try:
-                config = self._save_configuration()
-            except (ConfigError, OSError) as error:
+                config, runtime_values = self._save_configuration()
+                values = self._configuration_values()
+            except (ConfigError, ServiceError, OSError) as error:
                 messagebox.showerror("Ошибка настройки", str(error), parent=root)
                 return
+            if self._is_remote():
+                remote = self._remote_service(values)
+
+                def start_remote() -> None:
+                    self.service.stop()
+                    remote.install_and_start(runtime_values)
+
+                action = start_remote
+                message = "Бот развёрнут и запущен на удалённом сервере."
+            else:
+
+                def start_local() -> None:
+                    self._stop_configured_remote(values)
+                    self.service.install_and_start(config.codex_cwd, config.codex_bin)
+
+                action = start_local
+                message = "Локальный фоновый процесс установлен и запущен."
             self._run_service_action(
-                lambda: self.service.install_and_start(
-                    config.codex_cwd, config.codex_bin
-                ),
-                "Фоновый процесс установлен и запущен.",
+                action,
+                message,
             )
 
         def _stop(self) -> None:
-            self._run_service_action(self.service.stop, "Фоновый процесс остановлен.")
+            try:
+                action = self._active_service().stop
+            except ServiceError as error:
+                messagebox.showerror("Ошибка настройки", str(error), parent=root)
+                return
+            self._run_service_action(action, "Фоновый процесс остановлен.")
 
         def _restart(self) -> None:
+            try:
+                action = self._active_service().restart
+            except ServiceError as error:
+                messagebox.showerror("Ошибка настройки", str(error), parent=root)
+                return
             self._run_service_action(
-                self.service.restart, "Фоновый процесс перезапущен."
+                action, "Фоновый процесс перезапущен."
             )
 
         def _uninstall(self) -> None:
+            try:
+                action = self._active_service().uninstall
+            except ServiceError as error:
+                messagebox.showerror("Ошибка настройки", str(error), parent=root)
+                return
             self._run_service_action(
-                self.service.uninstall,
+                action,
                 "Автозапуск удалён. Настройки и логи сохранены.",
             )
+
+        def _test_remote_connection(self) -> None:
+            try:
+                remote = self._remote_service(self._configuration_values())
+            except ServiceError as error:
+                messagebox.showerror("Ошибка настройки", str(error), parent=root)
+                return
+            self._run_service_action(
+                remote.test_connection,
+                "SSH-подключение и пользовательский systemd доступны.",
+            )
+
+        def _active_service(self):
+            if self._is_remote():
+                return self._remote_service(self._configuration_values())
+            return self.service
+
+        @staticmethod
+        def _remote_service(values: dict[str, str]) -> RemoteServiceManager:
+            return RemoteServiceManager(RemoteSettings.from_mapping(values))
+
+        def _stop_configured_remote(self, values: dict[str, str]) -> None:
+            if not values.get("REMOTE_SSH_HOST", "").strip():
+                return
+            self._remote_service(values).stop()
 
         def _run_service_action(
             self, action: Callable[[], None], success_message: str
@@ -730,6 +931,9 @@ def launch_gui(config_path: Path | None = None) -> None:
             self._refresh_status()
 
         def _refresh_status(self) -> None:
+            if self._is_remote():
+                self._refresh_remote_status()
+                return
             try:
                 status = self.service.status()
             except (ServiceError, OSError, subprocess.SubprocessError):
@@ -738,10 +942,42 @@ def launch_gui(config_path: Path | None = None) -> None:
                 color = SUCCESS if status.running else MUTED
                 self._set_status(status.description, color)
 
+        def _refresh_remote_status(self) -> None:
+            try:
+                service = self._remote_service(self._configuration_values())
+            except ServiceError:
+                self._set_status("Укажите SSH-хост", MUTED)
+                return
+            self._set_status("Проверка сервера…", WARNING)
+
+            def worker() -> None:
+                try:
+                    status = service.status()
+                except (ServiceError, OSError, subprocess.SubprocessError):
+                    root.after(
+                        0,
+                        lambda: self._set_status(
+                            "Сервер недоступен", WARNING
+                        ) if self._is_remote() else None,
+                    )
+                    return
+                color = SUCCESS if status.running else MUTED
+                root.after(
+                    0,
+                    lambda: self._set_status(status.description, color)
+                    if self._is_remote()
+                    else None,
+                )
+
+            threading.Thread(target=worker, daemon=True).start()
+
         def _set_status(self, text: str, color) -> None:
             self.status_label.configure(text=f"●  {text}", text_color=color)
 
         def _open_logs(self) -> None:
+            if self._is_remote():
+                self._open_remote_logs()
+                return
             try:
                 self.service.log_dir.mkdir(parents=True, exist_ok=True)
                 if sys.platform == "win32":
@@ -752,6 +988,45 @@ def launch_gui(config_path: Path | None = None) -> None:
                     subprocess.Popen(["xdg-open", str(self.service.log_dir)])
             except OSError as error:
                 messagebox.showerror("Не удалось открыть логи", str(error), parent=root)
+
+        def _open_remote_logs(self) -> None:
+            try:
+                service = self._remote_service(self._configuration_values())
+            except ServiceError as error:
+                messagebox.showerror("Ошибка настройки", str(error), parent=root)
+                return
+            self._set_status("Загрузка логов…", WARNING)
+
+            def worker() -> None:
+                try:
+                    logs = service.logs()
+                except (ServiceError, OSError, subprocess.SubprocessError) as error:
+                    root.after(
+                        0,
+                        lambda message=str(error): messagebox.showerror(
+                            "Не удалось загрузить логи", message, parent=root
+                        ),
+                    )
+                else:
+                    root.after(0, lambda: self._show_logs_window(logs))
+                finally:
+                    root.after(0, self._refresh_status)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        @staticmethod
+        def _show_logs_window(logs: str) -> None:
+            window = ctk.CTkToplevel(root)
+            window.title("Логи удалённого бота")
+            window.geometry("900x600")
+            textbox = ctk.CTkTextbox(
+                window,
+                corner_radius=12,
+                font=ctk.CTkFont(family="Menlo", size=12),
+            )
+            textbox.pack(fill="both", expand=True, padx=16, pady=16)
+            textbox.insert("1.0", logs)
+            textbox.configure(state="disabled")
 
     SettingsWindow()
     root.mainloop()

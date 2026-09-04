@@ -12,7 +12,7 @@ from pathlib import Path
 
 APP_NAME = "scooters-codex-telegram-bot"
 CONFIG_FILE_HEADER = "# Managed by Codex Telegram Bot. Do not commit this file.\n"
-CONFIG_KEYS = (
+RUNTIME_CONFIG_KEYS = (
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_ALLOWED_USER_IDS",
     "CODEX_CWD",
@@ -30,6 +30,18 @@ CONFIG_KEYS = (
     "AUTO_APPROVE_SAFE_READ_ONLY",
     "AUTO_APPROVE_READ_ROOTS",
 )
+DESKTOP_CONFIG_KEYS = (
+    "RUN_MODE",
+    "REMOTE_SSH_HOST",
+    "REMOTE_SSH_USER",
+    "REMOTE_SSH_PORT",
+    "REMOTE_SSH_IDENTITY_FILE",
+    "REMOTE_INSTALL_DIR",
+    "REMOTE_CODEX_CWD",
+    "REMOTE_CODEX_BIN",
+    "REMOTE_PYTHON_BIN",
+)
+CONFIG_KEYS = (*RUNTIME_CONFIG_KEYS, *DESKTOP_CONFIG_KEYS)
 _SAFE_ENV_VALUE = re.compile(r"^[A-Za-z0-9_./:@,+\\-]*$")
 
 
@@ -109,13 +121,7 @@ def write_dotenv(path: Path, values: Mapping[str, str]) -> None:
     """Atomically write configuration with owner-only permissions where supported."""
     path = path.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
-    lines = [CONFIG_FILE_HEADER.rstrip("\n")]
-    for key in CONFIG_KEYS:
-        value = values.get(key)
-        if value is None:
-            continue
-        lines.append(f"{key}={_encode_env_value(str(value))}")
-    payload = "\n".join(lines) + "\n"
+    payload = format_dotenv(values)
 
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", dir=path.parent
@@ -132,6 +138,19 @@ def write_dotenv(path: Path, values: Mapping[str, str]) -> None:
     finally:
         if temporary_path.exists():
             temporary_path.unlink()
+
+
+def format_dotenv(
+    values: Mapping[str, str], keys: tuple[str, ...] = CONFIG_KEYS
+) -> str:
+    """Serialize supported values without exposing unrelated environment entries."""
+    lines = [CONFIG_FILE_HEADER.rstrip("\n")]
+    for key in keys:
+        value = values.get(key)
+        if value is None:
+            continue
+        lines.append(f"{key}={_encode_env_value(str(value))}")
+    return "\n".join(lines) + "\n"
 
 
 def _decode_env_value(value: str, line_number: int) -> str:
@@ -236,7 +255,12 @@ class Config:
         return cls.from_mapping(environment)
 
     @classmethod
-    def from_mapping(cls, environment: Mapping[str, str]) -> Config:
+    def from_mapping(
+        cls,
+        environment: Mapping[str, str],
+        *,
+        validate_local_paths: bool = True,
+    ) -> Config:
         token = environment.get("TELEGRAM_BOT_TOKEN", "").strip()
         if not token:
             token = _read_token_from_keyring()
@@ -244,15 +268,16 @@ class Config:
             raise ConfigError("TELEGRAM_BOT_TOKEN is not configured")
 
         codex_bin = environment.get("CODEX_BIN", "codex").strip() or "codex"
-        if shutil.which(codex_bin) is None:
+        if validate_local_paths and shutil.which(codex_bin) is None:
             raise ConfigError(f"Codex executable not found: {codex_bin}")
 
         codex_cwd = Path(
             environment.get("CODEX_CWD", str(Path.cwd()))
         ).expanduser()
-        if not codex_cwd.is_dir():
+        if validate_local_paths and not codex_cwd.is_dir():
             raise ConfigError(f"CODEX_CWD is not a directory: {codex_cwd}")
-        codex_cwd = codex_cwd.resolve()
+        if validate_local_paths:
+            codex_cwd = codex_cwd.resolve()
 
         state_path_value = environment.get("BOT_STATE_PATH", "").strip()
         state_path = (

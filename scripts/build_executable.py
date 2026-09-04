@@ -25,6 +25,7 @@ def main() -> None:
         / "assets"
         / "app-icon.png"
     )
+    package_path = project_root / "src" / "scooters_codex_telegram_bot"
     arguments = [
         str(project_root / "run_desktop.py"),
         "--name=CodexTelegramBot",
@@ -36,6 +37,7 @@ def main() -> None:
         f"--specpath={project_root / 'build'}",
         f"--icon={icon_path}",
         f"--add-data={icon_path}:scooters_codex_telegram_bot/assets",
+        f"--add-data={package_path}:remote_runtime/scooters_codex_telegram_bot",
         "--collect-all=customtkinter",
         "--collect-submodules=keyring.backends",
     ]
