@@ -623,7 +623,9 @@ def launch_gui(config_path: Path | None = None) -> None:
                     result[key] = normalized
             codex_bin = result.get("CODEX_BIN", "codex") or "codex"
             if resolved_codex_bin := shutil.which(codex_bin):
-                result["CODEX_BIN"] = str(Path(resolved_codex_bin).resolve())
+                # Preserve the symlink path: npm installs `codex` beside `node`,
+                # which lets the background service reconstruct a usable PATH.
+                result["CODEX_BIN"] = os.path.abspath(resolved_codex_bin)
             result.setdefault("VOICE_MAX_DURATION_SECONDS", "600")
             result.setdefault("VOICE_MAX_FILE_BYTES", str(20 * 1024 * 1024))
             return result
@@ -673,7 +675,9 @@ def launch_gui(config_path: Path | None = None) -> None:
                 messagebox.showerror("Ошибка настройки", str(error), parent=root)
                 return
             self._run_service_action(
-                lambda: self.service.install_and_start(config.codex_cwd),
+                lambda: self.service.install_and_start(
+                    config.codex_cwd, config.codex_bin
+                ),
                 "Фоновый процесс установлен и запущен.",
             )
 

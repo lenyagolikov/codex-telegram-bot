@@ -10,6 +10,7 @@ from scooters_codex_telegram_bot.service import (
     ServiceManager,
     linux_unit_text,
     macos_plist_bytes,
+    service_environment_path,
 )
 
 
@@ -22,11 +23,15 @@ class ServiceDefinitionTests(unittest.TestCase):
                 root / "settings" / ".env",
                 root / "project with spaces",
                 root / "logs",
+                "/opt/homebrew/bin:/usr/bin:/bin",
             )
 
         self.assertIn('ExecStart="/opt/Codex Telegram Bot/bin" "--service"', unit)
         self.assertIn('WorkingDirectory="', unit)
         self.assertIn("Restart=always", unit)
+        self.assertIn(
+            'Environment="PATH=/opt/homebrew/bin:/usr/bin:/bin"', unit
+        )
         self.assertIn("StandardError=append:", unit)
 
     def test_macos_plist_contains_background_arguments_and_logs(self) -> None:
@@ -38,6 +43,7 @@ class ServiceDefinitionTests(unittest.TestCase):
                     root / ".env",
                     root / "workspace",
                     root / "logs",
+                    "/opt/homebrew/bin:/usr/bin:/bin",
                 )
             )
 
@@ -52,7 +58,19 @@ class ServiceDefinitionTests(unittest.TestCase):
         )
         self.assertTrue(payload["RunAtLoad"])
         self.assertTrue(payload["KeepAlive"])
+        self.assertEqual(
+            payload["EnvironmentVariables"]["PATH"],
+            "/opt/homebrew/bin:/usr/bin:/bin",
+        )
         self.assertEqual(payload["StandardErrorPath"], str(root / "logs/bot.err.log"))
+
+    def test_service_path_includes_codex_directory_and_standard_paths(self) -> None:
+        environment_path = service_environment_path("/custom/node/bin/codex")
+        directories = environment_path.split(":")
+
+        self.assertEqual(directories[0], "/custom/node/bin")
+        self.assertIn("/opt/homebrew/bin", directories)
+        self.assertIn("/usr/bin", directories)
 
     def test_macos_stop_unloads_keepalive_service(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -35,10 +35,55 @@ def runtime_command() -> tuple[str, ...]:
     return (sys.executable, "-m", "scooters_codex_telegram_bot")
 
 
+def service_environment_path(codex_bin: str) -> str:
+    """Build a stable PATH for services started outside an interactive shell."""
+    directories: list[str] = []
+
+    def add(directory: str | Path) -> None:
+        value = str(directory).strip()
+        if value and value not in directories:
+            directories.append(value)
+
+    expanded_codex_bin = os.path.expanduser(codex_bin)
+    if os.path.dirname(expanded_codex_bin):
+        # Keep the symlink's directory: npm commonly installs `codex` next to `node`.
+        add(Path(os.path.abspath(expanded_codex_bin)).parent)
+    elif resolved_codex_bin := shutil.which(expanded_codex_bin):
+        add(Path(resolved_codex_bin).parent)
+
+    if resolved_node := shutil.which("node"):
+        add(Path(resolved_node).parent)
+
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        add(directory)
+
+    # GUI apps and service managers on macOS often do not inherit Homebrew paths.
+    for directory in (
+        "/opt/homebrew/bin",
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ):
+        add(directory)
+
+    return os.pathsep.join(directories)
+
+
 def linux_unit_text(
-    command: Sequence[str], config_path: Path, working_directory: Path, log_dir: Path
+    command: Sequence[str],
+    config_path: Path,
+    working_directory: Path,
+    log_dir: Path,
+    environment_path: str | None = None,
 ) -> str:
     arguments = [*command, "--service", "--config", str(config_path)]
+    environment = (
+        f"Environment={_systemd_quote(f'PATH={environment_path}')}\n"
+        if environment_path
+        else ""
+    )
     return (
         "[Unit]\n"
         "Description=Scooters Codex Telegram Bot\n"
@@ -47,6 +92,7 @@ def linux_unit_text(
         "[Service]\n"
         "Type=simple\n"
         f"WorkingDirectory={_systemd_quote(str(working_directory))}\n"
+        f"{environment}"
         f"ExecStart={' '.join(_systemd_quote(value) for value in arguments)}\n"
         "Restart=always\n"
         "RestartSec=10\n"
@@ -61,7 +107,11 @@ def linux_unit_text(
 
 
 def macos_plist_bytes(
-    command: Sequence[str], config_path: Path, working_directory: Path, log_dir: Path
+    command: Sequence[str],
+    config_path: Path,
+    working_directory: Path,
+    log_dir: Path,
+    environment_path: str | None = None,
 ) -> bytes:
     arguments = [*command, "--service", "--config", str(config_path)]
     payload = {
@@ -75,6 +125,8 @@ def macos_plist_bytes(
         "StandardOutPath": str(log_dir / "bot.out.log"),
         "StandardErrorPath": str(log_dir / "bot.err.log"),
     }
+    if environment_path:
+        payload["EnvironmentVariables"] = {"PATH": environment_path}
     return plistlib.dumps(payload, fmt=plistlib.FMT_XML, sort_keys=False)
 
 
@@ -92,15 +144,16 @@ class ServiceManager:
         self.platform = platform or sys.platform
         self.log_dir = (log_dir or default_log_dir()).expanduser().resolve()
 
-    def install(self, working_directory: Path) -> None:
+    def install(self, working_directory: Path, codex_bin: str = "codex") -> None:
         working_directory = working_directory.expanduser().resolve()
+        environment_path = service_environment_path(codex_bin)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         if self.platform == "darwin":
-            self._install_macos(working_directory)
+            self._install_macos(working_directory, environment_path)
         elif self.platform == "win32":
             self._install_windows()
         else:
-            self._install_linux(working_directory)
+            self._install_linux(working_directory, environment_path)
 
     def start(self) -> None:
         if self.platform == "darwin":
@@ -211,12 +264,16 @@ class ServiceManager:
             description = "Остановлен"
         return ServiceStatus(installed, running, description)
 
-    def install_and_start(self, working_directory: Path) -> None:
-        self.install(working_directory)
+    def install_and_start(
+        self, working_directory: Path, codex_bin: str = "codex"
+    ) -> None:
+        self.install(working_directory, codex_bin)
         if self.platform != "darwin":
             self.start()
 
-    def _install_linux(self, working_directory: Path) -> None:
+    def _install_linux(
+        self, working_directory: Path, environment_path: str
+    ) -> None:
         if shutil.which("systemctl") is None:
             raise ServiceError("systemctl is not available on this Linux host")
         unit_path = self._linux_service_path()
@@ -227,6 +284,7 @@ class ServiceManager:
                 self.config_path,
                 working_directory,
                 self.log_dir,
+                environment_path,
             ),
             encoding="utf-8",
         )
@@ -235,7 +293,9 @@ class ServiceManager:
         self._run(["systemctl", "--user", "daemon-reload"])
         self._run(["systemctl", "--user", "enable", f"{APP_NAME}.service"])
 
-    def _install_macos(self, working_directory: Path) -> None:
+    def _install_macos(
+        self, working_directory: Path, environment_path: str
+    ) -> None:
         service_path = self._macos_service_path()
         service_path.parent.mkdir(parents=True, exist_ok=True)
         domain = f"gui/{os.getuid()}"
@@ -250,6 +310,7 @@ class ServiceManager:
                 self.config_path,
                 working_directory,
                 self.log_dir,
+                environment_path,
             )
         )
         with suppress(PermissionError):

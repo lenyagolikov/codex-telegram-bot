@@ -120,7 +120,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     if args.install_service:
         try:
-            service_manager.install_and_start(config.codex_cwd)
+            service_manager.install_and_start(config.codex_cwd, config.codex_bin)
         except (ServiceError, OSError, subprocess.SubprocessError) as error:
             raise SystemExit(f"Service error: {error}") from error
         print("Background process installed and started.")
