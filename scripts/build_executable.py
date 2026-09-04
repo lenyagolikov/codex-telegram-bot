@@ -18,6 +18,13 @@ def main() -> None:
             "Install the desktop extra: python -m pip install '.[desktop]'"
         ) from error
 
+    icon_path = (
+        project_root
+        / "src"
+        / "scooters_codex_telegram_bot"
+        / "assets"
+        / "app-icon.png"
+    )
     arguments = [
         str(project_root / "run_desktop.py"),
         "--name=CodexTelegramBot",
@@ -27,6 +34,9 @@ def main() -> None:
         f"--distpath={project_root / 'dist'}",
         f"--workpath={project_root / 'build' / 'pyinstaller'}",
         f"--specpath={project_root / 'build'}",
+        f"--icon={icon_path}",
+        f"--add-data={icon_path}:scooters_codex_telegram_bot/assets",
+        "--collect-all=customtkinter",
         "--collect-submodules=keyring.backends",
     ]
     if sys.platform == "darwin":

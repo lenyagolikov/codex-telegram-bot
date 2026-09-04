@@ -22,7 +22,9 @@ dependencies = []
 [project.optional-dependencies]
 voice = ["faster-whisper>=1.1,<2"]
 desktop = [
+    "customtkinter>=5.2,<6",
     "keyring>=25,<26",
+    "pillow>=11,<13",
     "pyinstaller>=6.12,<7",
 ]
 dev = [
@@ -39,6 +41,9 @@ version = {attr = "scooters_codex_telegram_bot.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+scooters_codex_telegram_bot = ["assets/*.png"]
 
 [tool.ruff]
 line-length = 100

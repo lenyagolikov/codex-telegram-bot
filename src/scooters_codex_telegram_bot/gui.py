@@ -13,21 +13,53 @@ from .config import Config, ConfigError, default_config_path, read_dotenv, write
 from .secrets import SecretStoreError, read_telegram_token, store_telegram_token
 from .service import ServiceError, ServiceManager
 
+ACCENT = "#6C5CE7"
+ACCENT_HOVER = "#5948D8"
+SUCCESS = "#2ECF82"
+WARNING = "#F5A524"
+MUTED = ("#687086", "#8E96AA")
+WINDOW_BACKGROUND = ("#F2F4F8", "#0D0F14")
+CARD_BACKGROUND = ("#FFFFFF", "#171A22")
+FIELD_BACKGROUND = ("#F7F8FB", "#20242E")
+
 
 def launch_gui(config_path: Path | None = None) -> None:
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox, ttk
+        from tkinter import filedialog, messagebox
+
+        import customtkinter as ctk
+        from PIL import Image
     except ImportError as error:
         raise SystemExit(
-            "The desktop interface requires tkinter. Install Tk support or use the CLI."
+            "The desktop interface requires the desktop extra; "
+            "run: python -m pip install '.[desktop]'"
         ) from error
 
+    ctk.set_appearance_mode("system")
+    ctk.set_default_color_theme("blue")
+
     selected_config_path = (config_path or default_config_path()).expanduser().resolve()
-    root = tk.Tk()
+    root = ctk.CTk(fg_color=WINDOW_BACKGROUND)
     root.title("Codex Telegram Bot")
-    root.geometry("760x690")
-    root.minsize(680, 620)
+    root.geometry("920x780")
+    root.minsize(820, 700)
+
+    icon_path = Path(__file__).resolve().parent / "assets" / "app-icon.png"
+    header_icon = None
+    if icon_path.is_file():
+        icon_image = Image.open(icon_path)
+        header_icon = ctk.CTkImage(
+            light_image=icon_image,
+            dark_image=icon_image,
+            size=(66, 66),
+        )
+        try:
+            native_icon = tk.PhotoImage(file=str(icon_path))
+            root.iconphoto(True, native_icon)
+            root._native_icon = native_icon  # type: ignore[attr-defined]
+        except tk.TclError:
+            pass
 
     class SettingsWindow:
         def __init__(self) -> None:
@@ -36,48 +68,79 @@ def launch_gui(config_path: Path | None = None) -> None:
                 self.values["TELEGRAM_BOT_TOKEN"] = read_telegram_token() or ""
             self.service = ServiceManager(selected_config_path)
             self.variables: dict[str, tk.Variable] = {}
-            self.action_buttons: list[ttk.Button] = []
+            self.action_buttons: list[ctk.CTkButton] = []
+            self.status_label: ctk.CTkLabel
+            self.token_entry: ctk.CTkEntry
             self._build()
             self._refresh_status()
 
         def _build(self) -> None:
-            container = ttk.Frame(root, padding=18)
-            container.pack(fill="both", expand=True)
+            page = ctk.CTkFrame(root, fg_color="transparent")
+            page.pack(fill="both", expand=True, padx=30, pady=26)
 
-            ttk.Label(
-                container,
+            header = ctk.CTkFrame(page, fg_color="transparent")
+            header.pack(fill="x", pady=(0, 20))
+            if header_icon is not None:
+                ctk.CTkLabel(header, text="", image=header_icon).pack(
+                    side="left", padx=(0, 16)
+                )
+            title_block = ctk.CTkFrame(header, fg_color="transparent")
+            title_block.pack(side="left", fill="x", expand=True)
+            ctk.CTkLabel(
+                title_block,
                 text="Codex Telegram Bot",
-                font=("TkDefaultFont", 18, "bold"),
-            ).pack(anchor="w")
-            ttk.Label(
-                container,
-                text=(
-                    "Настройте Telegram, выберите рабочую папку Codex и установите "
-                    "фоновый запуск."
-                ),
-            ).pack(anchor="w", pady=(4, 14))
+                font=ctk.CTkFont(size=27, weight="bold"),
+                anchor="w",
+            ).pack(fill="x")
+            ctk.CTkLabel(
+                title_block,
+                text="Настройте личный Telegram-интерфейс для Codex",
+                text_color=MUTED,
+                font=ctk.CTkFont(size=14),
+                anchor="w",
+            ).pack(fill="x", pady=(4, 0))
 
-            notebook = ttk.Notebook(container)
-            notebook.pack(fill="both", expand=True)
-            basic = ttk.Frame(notebook, padding=14)
-            advanced = ttk.Frame(notebook, padding=14)
-            notebook.add(basic, text="Основные")
-            notebook.add(advanced, text="Дополнительно")
-            basic.columnconfigure(1, weight=1)
-            advanced.columnconfigure(1, weight=1)
-
-            self._add_entry(
-                basic,
-                0,
-                "Telegram Bot Token",
-                "TELEGRAM_BOT_TOKEN",
-                show="•",
+            self.appearance_menu = ctk.CTkSegmentedButton(
+                header,
+                values=["Система", "Светлая", "Тёмная"],
+                command=self._change_appearance,
+                selected_color=ACCENT,
+                selected_hover_color=ACCENT_HOVER,
+                height=34,
             )
+            self.appearance_menu.set("Система")
+            self.appearance_menu.pack(side="right")
+
+            content = ctk.CTkFrame(
+                page,
+                fg_color=CARD_BACKGROUND,
+                corner_radius=20,
+                border_width=1,
+                border_color=("#E3E6ED", "#292D38"),
+            )
+            content.pack(fill="both", expand=True)
+
+            tabs = ctk.CTkTabview(
+                content,
+                fg_color="transparent",
+                segmented_button_selected_color=ACCENT,
+                segmented_button_selected_hover_color=ACCENT_HOVER,
+                segmented_button_unselected_hover_color=("#E9EAF2", "#303441"),
+                corner_radius=16,
+            )
+            tabs.pack(fill="both", expand=True, padx=18, pady=(12, 6))
+            basic = tabs.add("Основные")
+            advanced = tabs.add("Дополнительно")
+            basic.grid_columnconfigure(1, weight=1)
+            advanced.grid_columnconfigure(1, weight=1)
+
+            self._add_token_entry(basic, 0)
             self._add_entry(
                 basic,
                 1,
                 "Разрешённые user ID",
                 "TELEGRAM_ALLOWED_USER_IDS",
+                hint="Несколько ID указываются через запятую",
             )
             self._add_path_entry(
                 basic,
@@ -93,58 +156,59 @@ def launch_gui(config_path: Path | None = None) -> None:
                 "CODEX_BIN",
                 choose_directory=False,
             )
-            self._add_entry(basic, 4, "Модель (необязательно)", "CODEX_MODEL")
-
-            effort = tk.StringVar(
-                value=self.values.get("CODEX_REASONING_EFFORT", "")
-            )
-            self.variables["CODEX_REASONING_EFFORT"] = effort
-            ttk.Label(basic, text="Reasoning effort").grid(
-                row=5, column=0, sticky="w", padx=(0, 12), pady=7
-            )
-            ttk.Combobox(
+            self._add_entry(
                 basic,
-                textvariable=effort,
-                values=("", "low", "medium", "high", "xhigh", "max", "ultra"),
-                state="readonly",
-            ).grid(row=5, column=1, sticky="ew", pady=7)
-
-            config_label = ttk.Label(
-                basic,
-                text=f"Конфигурация: {selected_config_path}",
-                foreground="#666666",
-                wraplength=620,
+                4,
+                "Модель",
+                "CODEX_MODEL",
+                hint="Оставьте пустым, чтобы использовать настройку Codex",
             )
-            config_label.grid(row=6, column=0, columnspan=3, sticky="w", pady=(18, 0))
+            self._add_option(
+                basic,
+                5,
+                "Reasoning effort",
+                "CODEX_REASONING_EFFORT",
+                ["По умолчанию", "low", "medium", "high", "xhigh", "max", "ultra"],
+            )
 
-            self._add_combo(
+            ctk.CTkLabel(
+                basic,
+                text=f"Файл настроек  ·  {selected_config_path}",
+                text_color=MUTED,
+                font=ctk.CTkFont(size=12),
+                anchor="w",
+                wraplength=690,
+            ).grid(row=6, column=0, columnspan=3, sticky="ew", padx=14, pady=(18, 6))
+
+            self._add_option(
                 advanced,
                 0,
                 "Сеть Telegram",
                 "TELEGRAM_IP_FAMILY",
-                ("auto", "ipv4", "ipv6"),
-                "auto",
+                ["auto", "ipv4", "ipv6"],
+                default="auto",
             )
             self._add_entry(
                 advanced,
                 1,
-                "Таймаут polling, сек.",
+                "Таймаут polling",
                 "POLL_TIMEOUT_SECONDS",
-                "30",
+                default="30",
+                suffix="сек.",
             )
-            self._add_checkbox(
+            self._add_switch(
                 advanced,
                 2,
                 "Распознавать голосовые сообщения",
                 "VOICE_TRANSCRIPTION_ENABLED",
             )
             self._add_entry(
-                advanced, 3, "Whisper-модель", "WHISPER_MODEL", "small"
+                advanced, 3, "Whisper-модель", "WHISPER_MODEL", default="small"
             )
             self._add_entry(
-                advanced, 4, "Язык Whisper", "WHISPER_LANGUAGE", "ru"
+                advanced, 4, "Язык Whisper", "WHISPER_LANGUAGE", default="ru"
             )
-            self._add_checkbox(
+            self._add_switch(
                 advanced,
                 5,
                 "Автоматически подтверждать безопасное чтение",
@@ -155,51 +219,132 @@ def launch_gui(config_path: Path | None = None) -> None:
                 6,
                 "Разрешённые корни чтения",
                 "AUTO_APPROVE_READ_ROOTS",
+                hint="Пути через запятую; по умолчанию — рабочая папка",
             )
 
-            warning = ttk.Label(
+            warning = ctk.CTkFrame(
                 advanced,
+                fg_color=("#FFF7E6", "#2B2418"),
+                corner_radius=12,
+            )
+            warning.grid(
+                row=7, column=0, columnspan=3, sticky="ew", padx=14, pady=(16, 8)
+            )
+            ctk.CTkLabel(
+                warning,
                 text=(
-                    "Автоподтверждение применяется только к операциям, которые Codex "
-                    "классифицировал как чтение, поиск или просмотр файлов."
+                    "Автоподтверждение работает только для чтения, поиска и "
+                    "просмотра файлов внутри разрешённых папок."
                 ),
-                foreground="#8a5a00",
-                wraplength=620,
+                text_color=("#8A5A00", "#F6C66C"),
+                justify="left",
+                anchor="w",
+                wraplength=680,
+            ).pack(fill="x", padx=14, pady=11)
+
+            footer = ctk.CTkFrame(page, fg_color="transparent")
+            footer.pack(fill="x", pady=(16, 0))
+            status_card = ctk.CTkFrame(
+                footer,
+                fg_color=CARD_BACKGROUND,
+                corner_radius=14,
+                border_width=1,
+                border_color=("#E3E6ED", "#292D38"),
             )
-            warning.grid(row=7, column=0, columnspan=3, sticky="w", pady=(18, 0))
-
-            status_frame = ttk.Frame(container)
-            status_frame.pack(fill="x", pady=(14, 8))
-            ttk.Label(status_frame, text="Фоновый процесс:").pack(side="left")
-            self.status_variable = tk.StringVar(value="Проверка…")
-            ttk.Label(
-                status_frame,
-                textvariable=self.status_variable,
-                font=("TkDefaultFont", 10, "bold"),
-            ).pack(side="left", padx=(6, 0))
-            ttk.Button(
-                status_frame, text="Обновить", command=self._refresh_status
-            ).pack(side="right")
-
-            buttons = ttk.Frame(container)
-            buttons.pack(fill="x")
-            self._button(buttons, "Сохранить", self._save).pack(side="left")
-            self._button(
-                buttons, "Сохранить и запустить в фоне", self._save_and_start
-            ).pack(side="left", padx=6)
-
-            service_buttons = ttk.Frame(container)
-            service_buttons.pack(fill="x", pady=(8, 0))
-            self._button(service_buttons, "Остановить", self._stop).pack(side="left")
-            self._button(service_buttons, "Перезапустить", self._restart).pack(
-                side="left", padx=6
+            status_card.pack(side="left")
+            self.status_label = ctk.CTkLabel(
+                status_card,
+                text="●  Проверка…",
+                text_color=MUTED,
+                font=ctk.CTkFont(size=13, weight="bold"),
             )
+            self.status_label.pack(side="left", padx=(14, 8), pady=10)
+            ctk.CTkButton(
+                status_card,
+                text="↻",
+                width=34,
+                height=30,
+                fg_color="transparent",
+                hover_color=("#ECEEF4", "#2A2E39"),
+                text_color=("#3A4050", "#DDE1EA"),
+                command=self._refresh_status,
+            ).pack(side="right", padx=(0, 6), pady=5)
+
+            primary_actions = ctk.CTkFrame(footer, fg_color="transparent")
+            primary_actions.pack(side="right")
             self._button(
-                service_buttons, "Удалить автозапуск", self._uninstall
+                primary_actions,
+                "Сохранить",
+                self._save,
+                secondary=True,
+                width=112,
+            ).pack(side="left", padx=(0, 8))
+            self._button(
+                primary_actions,
+                "Сохранить и запустить",
+                self._save_and_start,
+                width=205,
             ).pack(side="left")
-            ttk.Button(
-                service_buttons, text="Открыть логи", command=self._open_logs
+
+            service_actions = ctk.CTkFrame(page, fg_color="transparent")
+            service_actions.pack(fill="x", pady=(10, 0))
+            self._button(
+                service_actions, "Остановить", self._stop, secondary=True, width=110
+            ).pack(side="left")
+            self._button(
+                service_actions,
+                "Перезапустить",
+                self._restart,
+                secondary=True,
+                width=130,
+            ).pack(side="left", padx=8)
+            self._button(
+                service_actions,
+                "Удалить автозапуск",
+                self._uninstall,
+                secondary=True,
+                width=160,
+            ).pack(side="left")
+            ctk.CTkButton(
+                service_actions,
+                text="Открыть логи",
+                command=self._open_logs,
+                width=120,
+                height=36,
+                corner_radius=10,
+                fg_color="transparent",
+                hover_color=("#E4E7EE", "#242832"),
+                text_color=("#475066", "#C8CDDA"),
             ).pack(side="right")
+
+        def _add_token_entry(self, parent, row: int) -> None:
+            variable = tk.StringVar(value=self.values.get("TELEGRAM_BOT_TOKEN", ""))
+            self.variables["TELEGRAM_BOT_TOKEN"] = variable
+            self._field_label(parent, row, "Telegram Bot Token")
+            field = ctk.CTkFrame(parent, fg_color="transparent")
+            field.grid(row=row, column=1, columnspan=2, sticky="ew", padx=14, pady=8)
+            field.grid_columnconfigure(0, weight=1)
+            self.token_entry = ctk.CTkEntry(
+                field,
+                textvariable=variable,
+                show="•",
+                height=40,
+                corner_radius=10,
+                border_width=1,
+                fg_color=FIELD_BACKGROUND,
+            )
+            self.token_entry.grid(row=0, column=0, sticky="ew")
+            ctk.CTkButton(
+                field,
+                text="Показать",
+                width=86,
+                height=40,
+                corner_radius=10,
+                fg_color="transparent",
+                hover_color=("#ECEEF4", "#2A2E39"),
+                text_color=("#475066", "#C8CDDA"),
+                command=self._toggle_token,
+            ).grid(row=0, column=1, padx=(8, 0))
 
         def _add_entry(
             self,
@@ -209,16 +354,32 @@ def launch_gui(config_path: Path | None = None) -> None:
             key: str,
             default: str = "",
             *,
-            show: str | None = None,
+            hint: str | None = None,
+            suffix: str | None = None,
         ) -> None:
             variable = tk.StringVar(value=self.values.get(key, default))
             self.variables[key] = variable
-            ttk.Label(parent, text=label).grid(
-                row=row, column=0, sticky="w", padx=(0, 12), pady=7
+            self._field_label(parent, row, label, hint)
+            entry = ctk.CTkEntry(
+                parent,
+                textvariable=variable,
+                height=40,
+                corner_radius=10,
+                border_width=1,
+                fg_color=FIELD_BACKGROUND,
             )
-            ttk.Entry(parent, textvariable=variable, show=show).grid(
-                row=row, column=1, columnspan=2, sticky="ew", pady=7
+            entry.grid(
+                row=row,
+                column=1,
+                columnspan=1 if suffix else 2,
+                sticky="ew",
+                padx=14,
+                pady=8,
             )
+            if suffix:
+                ctk.CTkLabel(parent, text=suffix, text_color=MUTED).grid(
+                    row=row, column=2, sticky="w", padx=(0, 14)
+                )
 
         def _add_path_entry(
             self,
@@ -234,12 +395,16 @@ def launch_gui(config_path: Path | None = None) -> None:
             )
             variable = tk.StringVar(value=self.values.get(key, default))
             self.variables[key] = variable
-            ttk.Label(parent, text=label).grid(
-                row=row, column=0, sticky="w", padx=(0, 12), pady=7
+            self._field_label(parent, row, label)
+            entry = ctk.CTkEntry(
+                parent,
+                textvariable=variable,
+                height=40,
+                corner_radius=10,
+                border_width=1,
+                fg_color=FIELD_BACKGROUND,
             )
-            ttk.Entry(parent, textvariable=variable).grid(
-                row=row, column=1, sticky="ew", pady=7
-            )
+            entry.grid(row=row, column=1, sticky="ew", padx=14, pady=8)
 
             def browse() -> None:
                 if choose_directory:
@@ -251,31 +416,51 @@ def launch_gui(config_path: Path | None = None) -> None:
                 if selected:
                     variable.set(selected)
 
-            ttk.Button(parent, text="Выбрать…", command=browse).grid(
-                row=row, column=2, padx=(8, 0), pady=7
-            )
+            ctk.CTkButton(
+                parent,
+                text="Выбрать",
+                command=browse,
+                width=92,
+                height=40,
+                corner_radius=10,
+                fg_color=("#EDEBFF", "#292540"),
+                hover_color=("#DDD9FF", "#353052"),
+                text_color=("#5144C7", "#B9B1FF"),
+            ).grid(row=row, column=2, sticky="e", padx=(0, 14), pady=8)
 
-        def _add_combo(
+        def _add_option(
             self,
             parent,
             row: int,
             label: str,
             key: str,
-            choices: tuple[str, ...],
-            default: str,
+            choices: list[str],
+            default: str = "",
         ) -> None:
-            variable = tk.StringVar(value=self.values.get(key, default))
-            self.variables[key] = variable
-            ttk.Label(parent, text=label).grid(
-                row=row, column=0, sticky="w", padx=(0, 12), pady=7
+            saved_value = self.values.get(key, default)
+            display_value = (
+                "По умолчанию"
+                if key == "CODEX_REASONING_EFFORT" and not saved_value
+                else saved_value
             )
-            ttk.Combobox(
-                parent, textvariable=variable, values=choices, state="readonly"
-            ).grid(row=row, column=1, columnspan=2, sticky="ew", pady=7)
+            variable = tk.StringVar(value=display_value)
+            self.variables[key] = variable
+            self._field_label(parent, row, label)
+            ctk.CTkOptionMenu(
+                parent,
+                variable=variable,
+                values=choices,
+                height=40,
+                corner_radius=10,
+                fg_color=FIELD_BACKGROUND,
+                button_color=("#E4E1FF", "#34304B"),
+                button_hover_color=("#D8D3FF", "#403A5C"),
+                text_color=("#202432", "#F1F3F8"),
+                dropdown_fg_color=CARD_BACKGROUND,
+                dropdown_hover_color=("#EDEBFF", "#302C46"),
+            ).grid(row=row, column=1, columnspan=2, sticky="ew", padx=14, pady=8)
 
-        def _add_checkbox(
-            self, parent, row: int, label: str, key: str
-        ) -> None:
+        def _add_switch(self, parent, row: int, label: str, key: str) -> None:
             enabled = self.values.get(key, "false").strip().lower() in {
                 "1",
                 "true",
@@ -284,14 +469,85 @@ def launch_gui(config_path: Path | None = None) -> None:
             }
             variable = tk.BooleanVar(value=enabled)
             self.variables[key] = variable
-            ttk.Checkbutton(parent, text=label, variable=variable).grid(
-                row=row, column=0, columnspan=3, sticky="w", pady=7
+            ctk.CTkSwitch(
+                parent,
+                text=label,
+                variable=variable,
+                progress_color=ACCENT,
+                button_hover_color=ACCENT_HOVER,
+                font=ctk.CTkFont(size=14, weight="bold"),
+            ).grid(
+                row=row,
+                column=0,
+                columnspan=3,
+                sticky="w",
+                padx=14,
+                pady=12,
             )
 
-        def _button(self, parent, text: str, callback: Callable[[], None]):
-            button = ttk.Button(parent, text=text, command=callback)
+        @staticmethod
+        def _field_label(parent, row: int, label: str, hint: str | None = None) -> None:
+            label_frame = ctk.CTkFrame(parent, fg_color="transparent")
+            label_frame.grid(row=row, column=0, sticky="w", padx=14, pady=8)
+            ctk.CTkLabel(
+                label_frame,
+                text=label,
+                font=ctk.CTkFont(size=14, weight="bold"),
+                anchor="w",
+            ).pack(anchor="w")
+            if hint:
+                ctk.CTkLabel(
+                    label_frame,
+                    text=hint,
+                    text_color=MUTED,
+                    font=ctk.CTkFont(size=11),
+                    anchor="w",
+                ).pack(anchor="w", pady=(2, 0))
+
+        def _button(
+            self,
+            parent,
+            text: str,
+            callback: Callable[[], None],
+            *,
+            secondary: bool = False,
+            width: int = 130,
+        ):
+            if secondary:
+                colors = {
+                    "fg_color": CARD_BACKGROUND,
+                    "hover_color": ("#E7E9F0", "#242832"),
+                    "text_color": ("#343A4A", "#E4E7EF"),
+                    "border_width": 1,
+                    "border_color": ("#D6DAE4", "#343947"),
+                }
+            else:
+                colors = {
+                    "fg_color": ACCENT,
+                    "hover_color": ACCENT_HOVER,
+                    "text_color": "#FFFFFF",
+                    "border_width": 0,
+                }
+            button = ctk.CTkButton(
+                parent,
+                text=text,
+                command=callback,
+                width=width,
+                height=40,
+                corner_radius=11,
+                font=ctk.CTkFont(size=13, weight="bold"),
+                **colors,
+            )
             self.action_buttons.append(button)
             return button
+
+        def _toggle_token(self) -> None:
+            self.token_entry.configure(show="" if self.token_entry.cget("show") else "•")
+
+        @staticmethod
+        def _change_appearance(value: str) -> None:
+            modes = {"Система": "system", "Светлая": "light", "Тёмная": "dark"}
+            ctk.set_appearance_mode(modes[value])
 
         def _configuration_values(self) -> dict[str, str]:
             result = dict(self.values)
@@ -300,7 +556,13 @@ def launch_gui(config_path: Path | None = None) -> None:
                 if isinstance(value, bool):
                     result[key] = "true" if value else "false"
                 else:
-                    result[key] = str(value).strip()
+                    normalized = str(value).strip()
+                    if (
+                        key == "CODEX_REASONING_EFFORT"
+                        and normalized == "По умолчанию"
+                    ):
+                        normalized = ""
+                    result[key] = normalized
             codex_bin = result.get("CODEX_BIN", "codex") or "codex"
             if resolved_codex_bin := shutil.which(codex_bin):
                 result["CODEX_BIN"] = str(Path(resolved_codex_bin).resolve())
@@ -375,8 +637,8 @@ def launch_gui(config_path: Path | None = None) -> None:
             self, action: Callable[[], None], success_message: str
         ) -> None:
             for button in self.action_buttons:
-                button.state(["disabled"])
-            self.status_variable.set("Выполняется…")
+                button.configure(state="disabled")
+            self._set_status("Выполняется…", WARNING)
 
             def worker() -> None:
                 try:
@@ -402,16 +664,20 @@ def launch_gui(config_path: Path | None = None) -> None:
 
         def _finish_service_action(self) -> None:
             for button in self.action_buttons:
-                button.state(["!disabled"])
+                button.configure(state="normal")
             self._refresh_status()
 
         def _refresh_status(self) -> None:
             try:
                 status = self.service.status()
             except (ServiceError, OSError, subprocess.SubprocessError):
-                self.status_variable.set("Не удалось определить")
+                self._set_status("Не удалось определить", WARNING)
             else:
-                self.status_variable.set(status.description)
+                color = SUCCESS if status.running else MUTED
+                self._set_status(status.description, color)
+
+        def _set_status(self, text: str, color) -> None:
+            self.status_label.configure(text=f"●  {text}", text_color=color)
 
         def _open_logs(self) -> None:
             try:
