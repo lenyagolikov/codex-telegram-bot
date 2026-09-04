@@ -32,6 +32,7 @@ def main() -> None:
         "--windowed",
         "--clean",
         "--noconfirm",
+        f"--paths={project_root / 'src'}",
         f"--distpath={project_root / 'dist'}",
         f"--workpath={project_root / 'build' / 'pyinstaller'}",
         f"--specpath={project_root / 'build'}",
