@@ -66,8 +66,8 @@ def launch_gui(config_path: Path | None = None) -> None:
     selected_config_path = (config_path or default_config_path()).expanduser().resolve()
     root = ctk.CTk(fg_color=WINDOW_BACKGROUND)
     root.title("Codex Telegram Bot")
-    root.geometry("900x700")
-    root.minsize(760, 600)
+    root.geometry("860x640")
+    root.minsize(720, 540)
 
     icon_path = Path(__file__).resolve().parent / "assets" / "app-icon.png"
     header_icon = None
@@ -76,7 +76,7 @@ def launch_gui(config_path: Path | None = None) -> None:
         header_icon = ctk.CTkImage(
             light_image=icon_image,
             dark_image=icon_image,
-            size=(66, 66),
+            size=(58, 58),
         )
         try:
             native_icon = tk.PhotoImage(file=str(icon_path))
@@ -103,13 +103,14 @@ def launch_gui(config_path: Path | None = None) -> None:
                 )
             )
             self._build()
+            self._install_edit_support()
             if self._is_remote():
                 self.tabs.set("Удалённый сервер")
             self._refresh_status()
 
         def _build(self) -> None:
             page = ctk.CTkFrame(root, fg_color="transparent")
-            page.pack(fill="both", expand=True, padx=24, pady=20)
+            page.pack(fill="both", expand=True, padx=20, pady=16)
             page.grid_columnconfigure(0, weight=1)
             page.grid_rowconfigure(2, weight=1)
 
@@ -400,6 +401,13 @@ def launch_gui(config_path: Path | None = None) -> None:
                 text_color=("#3A4050", "#DDE1EA"),
                 command=self._refresh_status,
             ).pack(side="right", padx=(0, 6), pady=5)
+            self._button(
+                footer,
+                "Управление",
+                self._open_service_controls,
+                secondary=True,
+                width=118,
+            ).pack(side="left", padx=(10, 0))
 
             primary_actions = ctk.CTkFrame(footer, fg_color="transparent")
             primary_actions.pack(side="right")
@@ -416,37 +424,6 @@ def launch_gui(config_path: Path | None = None) -> None:
                 self._save_and_start,
                 width=205,
             ).pack(side="left")
-
-            service_actions = ctk.CTkFrame(page, fg_color="transparent")
-            service_actions.grid(row=4, column=0, sticky="ew", pady=(8, 0))
-            self._button(
-                service_actions, "Остановить", self._stop, secondary=True, width=110
-            ).pack(side="left")
-            self._button(
-                service_actions,
-                "Перезапустить",
-                self._restart,
-                secondary=True,
-                width=130,
-            ).pack(side="left", padx=8)
-            self._button(
-                service_actions,
-                "Удалить автозапуск",
-                self._uninstall,
-                secondary=True,
-                width=160,
-            ).pack(side="left")
-            ctk.CTkButton(
-                service_actions,
-                text="Открыть логи",
-                command=self._open_logs,
-                width=120,
-                height=36,
-                corner_radius=10,
-                fg_color="transparent",
-                hover_color=("#E4E7EE", "#242832"),
-                text_color=("#475066", "#C8CDDA"),
-            ).pack(side="right")
 
         @staticmethod
         def _scrollable_tab(parent):
@@ -477,7 +454,6 @@ def launch_gui(config_path: Path | None = None) -> None:
                 fg_color=FIELD_BACKGROUND,
             )
             self.token_entry.grid(row=0, column=0, sticky="ew")
-            self._bind_edit_shortcuts(self.token_entry)
             ctk.CTkButton(
                 field,
                 text="Показать",
@@ -520,7 +496,6 @@ def launch_gui(config_path: Path | None = None) -> None:
                 padx=14,
                 pady=8,
             )
-            self._bind_edit_shortcuts(entry)
             if suffix:
                 ctk.CTkLabel(parent, text=suffix, text_color=MUTED).grid(
                     row=row, column=2, sticky="w", padx=(0, 14)
@@ -553,7 +528,6 @@ def launch_gui(config_path: Path | None = None) -> None:
                 fg_color=FIELD_BACKGROUND,
             )
             entry.grid(row=row, column=1, sticky="ew", padx=14, pady=8)
-            self._bind_edit_shortcuts(entry)
 
             def browse() -> None:
                 if choose_directory:
@@ -693,33 +667,92 @@ def launch_gui(config_path: Path | None = None) -> None:
         def _toggle_token(self) -> None:
             self.token_entry.configure(show="" if self.token_entry.cget("show") else "•")
 
-        def _bind_edit_shortcuts(self, entry) -> None:
-            entry.bind("<Control-KeyPress>", self._handle_edit_shortcut)
-            if sys.platform == "darwin":
-                entry.bind("<Command-KeyPress>", self._handle_edit_shortcut)
+        def _install_edit_support(self) -> None:
+            modifier = "Command" if sys.platform == "darwin" else "Control"
+            root.bind_all(f"<{modifier}-KeyPress>", self._handle_edit_shortcut)
 
-        @staticmethod
-        def _handle_edit_shortcut(event):
+            accelerator = "⌘" if sys.platform == "darwin" else "Ctrl+"
+            menu_bar = tk.Menu(root)
+            edit_menu = tk.Menu(menu_bar, tearoff=False)
+            edit_menu.add_command(
+                label="Вырезать",
+                accelerator=f"{accelerator}X",
+                command=lambda: self._perform_edit_action("cut"),
+            )
+            edit_menu.add_command(
+                label="Копировать",
+                accelerator=f"{accelerator}C",
+                command=lambda: self._perform_edit_action("copy"),
+            )
+            edit_menu.add_command(
+                label="Вставить",
+                accelerator=f"{accelerator}V",
+                command=lambda: self._perform_edit_action("paste"),
+            )
+            edit_menu.add_separator()
+            edit_menu.add_command(
+                label="Выбрать всё",
+                accelerator=f"{accelerator}A",
+                command=lambda: self._perform_edit_action("select_all"),
+            )
+            menu_bar.add_cascade(label="Правка", menu=edit_menu)
+            root.configure(menu=menu_bar)
+            self._menu_bar = menu_bar
+
+        def _handle_edit_shortcut(self, event):
+            # Tk already handles Latin shortcuts for native Entry/Text widgets.
+            # The fallback below is needed for non-Latin keyboard layouts, where
+            # macOS reports the physical key through keycode instead of a/c/v/x.
+            if event.keysym.lower() in {"a", "c", "v", "x"}:
+                return None
             action = _shortcut_action(event.keysym, event.keycode, sys.platform)
             if action is None:
                 return None
+            return self._apply_edit_action(event.widget, action)
 
-            widget = event.widget
-            if not isinstance(widget, tk.Entry):
+        def _perform_edit_action(self, action: str) -> None:
+            widget = root.focus_get()
+            if widget is not None:
+                self._apply_edit_action(widget, action)
+
+        @staticmethod
+        def _editable_widget(widget):
+            if isinstance(widget, (tk.Entry, tk.Text)):
+                return widget
+            for attribute in ("_entry", "_textbox"):
+                candidate = getattr(widget, attribute, None)
+                if isinstance(candidate, (tk.Entry, tk.Text)):
+                    return candidate
+            return None
+
+        def _apply_edit_action(self, widget, action: str):
+            widget = self._editable_widget(widget)
+            if widget is None:
                 return None
+
             if action == "select_all":
-                widget.selection_range(0, tk.END)
-                widget.icursor(tk.END)
+                if isinstance(widget, tk.Entry):
+                    widget.selection_range(0, tk.END)
+                    widget.icursor(tk.END)
+                else:
+                    widget.tag_add(tk.SEL, "1.0", "end-1c")
+                    widget.mark_set(tk.INSERT, "end-1c")
                 return "break"
 
             if action in {"copy", "cut"}:
                 try:
-                    first = int(widget.index("sel.first"))
-                    last = int(widget.index("sel.last"))
+                    if isinstance(widget, tk.Entry):
+                        first = int(widget.index("sel.first"))
+                        last = int(widget.index("sel.last"))
+                        selected_text = widget.get()[first:last]
+                    else:
+                        first = widget.index("sel.first")
+                        last = widget.index("sel.last")
+                        selected_text = widget.get(first, last)
                 except tk.TclError:
                     return "break"
                 root.clipboard_clear()
-                root.clipboard_append(widget.get()[first:last])
+                root.clipboard_append(selected_text)
                 if action == "cut":
                     widget.delete(first, last)
                 return "break"
@@ -728,9 +761,17 @@ def launch_gui(config_path: Path | None = None) -> None:
                 clipboard_text = root.clipboard_get()
             except tk.TclError:
                 return "break"
-            if widget.selection_present():
-                widget.delete("sel.first", "sel.last")
-            widget.insert(widget.index("insert"), clipboard_text)
+            try:
+                if isinstance(widget, tk.Entry):
+                    if widget.selection_present():
+                        widget.delete("sel.first", "sel.last")
+                    widget.insert(widget.index("insert"), clipboard_text)
+                else:
+                    if widget.tag_ranges(tk.SEL):
+                        widget.delete("sel.first", "sel.last")
+                    widget.insert(tk.INSERT, clipboard_text)
+            except tk.TclError:
+                return "break"
             return "break"
 
         @staticmethod
@@ -858,6 +899,69 @@ def launch_gui(config_path: Path | None = None) -> None:
                 action,
                 message,
             )
+
+        def _open_service_controls(self) -> None:
+            window = ctk.CTkToplevel(root)
+            window.title("Управление процессом")
+            window.geometry("430x280")
+            window.resizable(False, False)
+            window.transient(root)
+            window.grab_set()
+
+            ctk.CTkLabel(
+                window,
+                text="Управление процессом",
+                font=ctk.CTkFont(size=22, weight="bold"),
+                anchor="w",
+            ).pack(fill="x", padx=24, pady=(22, 4))
+            ctk.CTkLabel(
+                window,
+                text="Действия применяются к выбранному режиму работы.",
+                text_color=MUTED,
+                font=ctk.CTkFont(size=13),
+                anchor="w",
+            ).pack(fill="x", padx=24, pady=(0, 18))
+
+            actions = ctk.CTkFrame(window, fg_color="transparent")
+            actions.pack(fill="both", expand=True, padx=24, pady=(0, 22))
+            actions.grid_columnconfigure((0, 1), weight=1)
+            actions.grid_rowconfigure((0, 1), weight=1)
+
+            def invoke(callback: Callable[[], None]) -> None:
+                window.grab_release()
+                window.destroy()
+                callback()
+
+            buttons = (
+                ("Остановить", self._stop, 0, 0),
+                ("Перезапустить", self._restart, 0, 1),
+                ("Открыть логи", self._open_logs, 1, 0),
+                ("Удалить автозапуск", self._confirm_uninstall, 1, 1),
+            )
+            for text, callback, row, column in buttons:
+                ctk.CTkButton(
+                    actions,
+                    text=text,
+                    command=lambda selected=callback: invoke(selected),
+                    height=44,
+                    corner_radius=11,
+                    fg_color=CARD_BACKGROUND,
+                    hover_color=("#E7E9F0", "#242832"),
+                    text_color=("#343A4A", "#E4E7EF"),
+                    border_width=1,
+                    border_color=("#D6DAE4", "#343947"),
+                    font=ctk.CTkFont(size=13, weight="bold"),
+                ).grid(row=row, column=column, sticky="nsew", padx=5, pady=5)
+
+        def _confirm_uninstall(self) -> None:
+            if not messagebox.askyesno(
+                "Удалить автозапуск?",
+                "Фоновый процесс будет остановлен, а автозапуск удалён. "
+                "Настройки и логи сохранятся.",
+                parent=root,
+            ):
+                return
+            self._uninstall()
 
         def _stop(self) -> None:
             try:
