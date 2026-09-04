@@ -33,7 +33,22 @@ FIELD_BACKGROUND = ("#F7F8FB", "#20242E")
 
 
 def _shortcut_action(keysym: str, keycode: int, platform: str) -> str | None:
-    actions = {"a": "select_all", "c": "copy", "v": "paste", "x": "cut"}
+    actions = {
+        "a": "select_all",
+        "c": "copy",
+        "v": "paste",
+        "x": "cut",
+        # Physical A/C/V/X keys in the Russian keyboard layout. Depending on
+        # the Tcl/Tk version, keysyms arrive either as names or as characters.
+        "cyrillic_ef": "select_all",
+        "cyrillic_es": "copy",
+        "cyrillic_em": "paste",
+        "cyrillic_che": "cut",
+        "ф": "select_all",
+        "с": "copy",
+        "м": "paste",
+        "ч": "cut",
+    }
     if action := actions.get(keysym.lower()):
         return action
     platform_keycodes = {

@@ -13,10 +13,18 @@ class ShortcutTests(unittest.TestCase):
         self.assertEqual(_shortcut_action("x", 999, "linux"), "cut")
 
     def test_macos_physical_keys_work_with_non_latin_layout(self) -> None:
-        self.assertEqual(_shortcut_action("Cyrillic_ef", 0, "darwin"), "select_all")
-        self.assertEqual(_shortcut_action("Cyrillic_es", 8, "darwin"), "copy")
-        self.assertEqual(_shortcut_action("Cyrillic_em", 9, "darwin"), "paste")
-        self.assertEqual(_shortcut_action("Cyrillic_che", 7, "darwin"), "cut")
+        self.assertEqual(
+            _shortcut_action("Cyrillic_ef", 999, "darwin"), "select_all"
+        )
+        self.assertEqual(_shortcut_action("Cyrillic_es", 999, "darwin"), "copy")
+        self.assertEqual(_shortcut_action("Cyrillic_em", 999, "darwin"), "paste")
+        self.assertEqual(_shortcut_action("Cyrillic_che", 999, "darwin"), "cut")
+
+    def test_macos_cyrillic_character_keysyms_are_supported(self) -> None:
+        self.assertEqual(_shortcut_action("ф", 999, "darwin"), "select_all")
+        self.assertEqual(_shortcut_action("с", 999, "darwin"), "copy")
+        self.assertEqual(_shortcut_action("м", 999, "darwin"), "paste")
+        self.assertEqual(_shortcut_action("ч", 999, "darwin"), "cut")
 
     def test_unrelated_shortcut_is_ignored(self) -> None:
         self.assertIsNone(_shortcut_action("z", 6, "darwin"))
