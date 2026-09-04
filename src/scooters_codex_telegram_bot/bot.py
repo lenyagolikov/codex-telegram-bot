@@ -25,12 +25,11 @@ INTERACTION_TIMEOUT_SECONDS = 24 * 60 * 60
 _MCP_FORM_CANCELLED = object()
 _MCP_FORM_SKIPPED = object()
 TELEGRAM_CLIENT_INSTRUCTIONS = """\
-This Codex thread is controlled through a Telegram client. The client does not
-provide the programmable `functions.exec` tool or any custom tool named `exec`.
-Never call those tools. Call built-in tools such as `exec_command`, MCP tools,
-and web tools directly instead; sequential calls are acceptable. Never ask the
-user to provide an internal tool-call payload or protocol JSON. Ask for input
-only when the information or decision genuinely has to come from the user.
+This Codex thread is controlled through a Telegram client. Use the shell,
+filesystem, MCP, and web tools available in the session whenever the task needs
+them. Never ask the user to provide an internal tool-call payload or protocol
+JSON. Ask for input only when the information or decision genuinely has to come
+from the user.
 """
 
 

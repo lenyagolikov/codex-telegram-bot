@@ -412,7 +412,7 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"decision": "decline"})
         self.assertEqual(bot._pending_callbacks, {})
 
-    async def test_thread_params_disable_programmatic_exec_via_instructions(self) -> None:
+    async def test_thread_instructions_do_not_forbid_available_tools(self) -> None:
         bot = make_bot()
 
         start_params = bot._start_thread_params()
@@ -424,7 +424,10 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             resume_params["developerInstructions"], TELEGRAM_CLIENT_INSTRUCTIONS
         )
-        self.assertIn("Never call those tools", TELEGRAM_CLIENT_INSTRUCTIONS)
+        self.assertIn("Use the shell", TELEGRAM_CLIENT_INSTRUCTIONS)
+        self.assertNotIn("Never call those tools", TELEGRAM_CLIENT_INSTRUCTIONS)
+        self.assertIn("internal tool-call payload", TELEGRAM_CLIENT_INSTRUCTIONS)
+        self.assertIn("JSON", TELEGRAM_CLIENT_INSTRUCTIONS)
 
     async def test_dynamic_tool_call_returns_retryable_failure(self) -> None:
         bot = make_bot()
