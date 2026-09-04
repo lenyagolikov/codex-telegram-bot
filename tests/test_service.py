@@ -82,13 +82,36 @@ class ServiceDefinitionTests(unittest.TestCase):
                     service, "_macos_service_path", return_value=service_path
                 ),
                 mock.patch.object(
-                    service, "_run", side_effect=[stopped, mock.Mock()]
+                    service,
+                    "_run",
+                    side_effect=[mock.Mock(), stopped, mock.Mock()],
                 ) as run,
             ):
                 service.start()
 
-        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_count, 3)
         self.assertEqual(run.call_args.args[0][:2], ["launchctl", "bootstrap"])
+
+    def test_macos_install_reenables_service_before_bootstrap(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = ServiceManager(
+                root / ".env",
+                platform="darwin",
+                log_dir=root / "logs",
+            )
+            service_path = root / "agent.plist"
+            with (
+                mock.patch.object(
+                    service, "_macos_service_path", return_value=service_path
+                ),
+                mock.patch.object(service, "_run") as run,
+            ):
+                service.install(root)
+
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(commands[-2][:2], ["launchctl", "enable"])
+        self.assertEqual(commands[-1][:2], ["launchctl", "bootstrap"])
 
     def test_windows_status_distinguishes_missing_task(self) -> None:
         service = ServiceManager(Path("settings.env"), platform="win32")

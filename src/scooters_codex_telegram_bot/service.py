@@ -108,7 +108,8 @@ class ServiceManager:
             if not service_path.is_file():
                 raise ServiceError("Background startup is not installed")
             domain = f"gui/{os.getuid()}"
-            target = f"gui/{os.getuid()}/{MACOS_SERVICE_LABEL}"
+            target = f"{domain}/{MACOS_SERVICE_LABEL}"
+            self._run(["launchctl", "enable", target])
             status = self._run(["launchctl", "print", target], check=False)
             if status.returncode == 0:
                 self._run(["launchctl", "kickstart", "-k", target])
@@ -238,6 +239,7 @@ class ServiceManager:
         service_path = self._macos_service_path()
         service_path.parent.mkdir(parents=True, exist_ok=True)
         domain = f"gui/{os.getuid()}"
+        target = f"{domain}/{MACOS_SERVICE_LABEL}"
         if service_path.exists():
             self._run(
                 ["launchctl", "bootout", domain, str(service_path)], check=False
@@ -252,6 +254,7 @@ class ServiceManager:
         )
         with suppress(PermissionError):
             service_path.chmod(0o600)
+        self._run(["launchctl", "enable", target])
         self._run(["launchctl", "bootstrap", domain, str(service_path)])
 
     def _install_windows(self) -> None:
