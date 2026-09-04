@@ -66,8 +66,8 @@ def launch_gui(config_path: Path | None = None) -> None:
     selected_config_path = (config_path or default_config_path()).expanduser().resolve()
     root = ctk.CTk(fg_color=WINDOW_BACKGROUND)
     root.title("Codex Telegram Bot")
-    root.geometry("920x780")
-    root.minsize(820, 700)
+    root.geometry("900x700")
+    root.minsize(760, 600)
 
     icon_path = Path(__file__).resolve().parent / "assets" / "app-icon.png"
     header_icon = None
@@ -109,10 +109,12 @@ def launch_gui(config_path: Path | None = None) -> None:
 
         def _build(self) -> None:
             page = ctk.CTkFrame(root, fg_color="transparent")
-            page.pack(fill="both", expand=True, padx=30, pady=26)
+            page.pack(fill="both", expand=True, padx=24, pady=20)
+            page.grid_columnconfigure(0, weight=1)
+            page.grid_rowconfigure(2, weight=1)
 
             header = ctk.CTkFrame(page, fg_color="transparent")
-            header.pack(fill="x", pady=(0, 20))
+            header.grid(row=0, column=0, sticky="ew", pady=(0, 14))
             if header_icon is not None:
                 ctk.CTkLabel(header, text="", image=header_icon).pack(
                     side="left", padx=(0, 16)
@@ -145,7 +147,7 @@ def launch_gui(config_path: Path | None = None) -> None:
             self.appearance_menu.pack(side="right")
 
             mode_bar = ctk.CTkFrame(page, fg_color="transparent")
-            mode_bar.pack(fill="x", pady=(0, 14))
+            mode_bar.grid(row=1, column=0, sticky="ew", pady=(0, 12))
             ctk.CTkLabel(
                 mode_bar,
                 text="Где работает бот",
@@ -170,7 +172,7 @@ def launch_gui(config_path: Path | None = None) -> None:
                 border_width=1,
                 border_color=("#E3E6ED", "#292D38"),
             )
-            content.pack(fill="both", expand=True)
+            content.grid(row=2, column=0, sticky="nsew")
 
             self.tabs = ctk.CTkTabview(
                 content,
@@ -181,9 +183,12 @@ def launch_gui(config_path: Path | None = None) -> None:
                 corner_radius=16,
             )
             self.tabs.pack(fill="both", expand=True, padx=18, pady=(12, 6))
-            basic = self.tabs.add("Локальные настройки")
-            remote = self.tabs.add("Удалённый сервер")
-            advanced = self.tabs.add("Дополнительно")
+            basic_tab = self.tabs.add("Локальные настройки")
+            remote_tab = self.tabs.add("Удалённый сервер")
+            advanced_tab = self.tabs.add("Дополнительно")
+            basic = self._scrollable_tab(basic_tab)
+            remote = self._scrollable_tab(remote_tab)
+            advanced = self._scrollable_tab(advanced_tab)
             basic.grid_columnconfigure(1, weight=1)
             remote.grid_columnconfigure(1, weight=1)
             advanced.grid_columnconfigure(1, weight=1)
@@ -369,7 +374,7 @@ def launch_gui(config_path: Path | None = None) -> None:
             ).pack(fill="x", padx=14, pady=11)
 
             footer = ctk.CTkFrame(page, fg_color="transparent")
-            footer.pack(fill="x", pady=(16, 0))
+            footer.grid(row=3, column=0, sticky="ew", pady=(12, 0))
             status_card = ctk.CTkFrame(
                 footer,
                 fg_color=CARD_BACKGROUND,
@@ -413,7 +418,7 @@ def launch_gui(config_path: Path | None = None) -> None:
             ).pack(side="left")
 
             service_actions = ctk.CTkFrame(page, fg_color="transparent")
-            service_actions.pack(fill="x", pady=(10, 0))
+            service_actions.grid(row=4, column=0, sticky="ew", pady=(8, 0))
             self._button(
                 service_actions, "Остановить", self._stop, secondary=True, width=110
             ).pack(side="left")
@@ -442,6 +447,18 @@ def launch_gui(config_path: Path | None = None) -> None:
                 hover_color=("#E4E7EE", "#242832"),
                 text_color=("#475066", "#C8CDDA"),
             ).pack(side="right")
+
+        @staticmethod
+        def _scrollable_tab(parent):
+            body = ctk.CTkScrollableFrame(
+                parent,
+                fg_color="transparent",
+                corner_radius=0,
+                scrollbar_button_color=("#C9CDD8", "#343947"),
+                scrollbar_button_hover_color=("#AEB4C2", "#464C5C"),
+            )
+            body.pack(fill="both", expand=True, padx=(0, 2), pady=(2, 0))
+            return body
 
         def _add_token_entry(self, parent, row: int) -> None:
             variable = tk.StringVar(value=self.values.get("TELEGRAM_BOT_TOKEN", ""))
