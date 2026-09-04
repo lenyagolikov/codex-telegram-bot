@@ -22,7 +22,7 @@
 
 ## Требования
 
-- Python 3.10–3.13;
+- для готового приложения Python не нужен;
 - установленная команда `codex`;
 - выполненный `codex login`;
 - Telegram-бот, созданный через [@BotFather](https://t.me/BotFather).
@@ -31,7 +31,28 @@ Codex CLI должен самостоятельно запускаться на 
 сведения по App Server находятся в
 [официальной документации Codex](https://developers.openai.com/codex/app-server/).
 
-## Установка из GitHub
+## Установка готового приложения
+
+Скачай архив для своей ОС со страницы
+[GitHub Releases](https://github.com/lenyagolikov/scooters-codex-telegram-bot/releases):
+
+- `CodexTelegramBot-macos-arm64.zip` для Mac с Apple Silicon;
+- `CodexTelegramBot-linux-x86_64.tar.gz` для Linux x86_64;
+- `CodexTelegramBot-windows-x86_64.zip` для Windows x86_64.
+
+Распакуй архив и запусти `CodexTelegramBot`. Откроется окно настройки: укажи
+токен Telegram-бота, разрешённые Telegram user ID, рабочую папку и путь к
+Codex CLI. Кнопка «Сохранить и запустить в фоне» установит системный сервис и
+запустит бота. После установки сервиса не перемещай исполняемый файл — сначала
+останови сервис, перенеси файл и установи сервис заново.
+
+Пока релизы не подписаны сертификатом разработчика, macOS или Windows могут
+показать системное предупреждение при первом запуске. Скачивай приложение
+только со страницы релизов этого репозитория.
+
+## Установка из исходного кода
+
+Для этого варианта нужен Python 3.10–3.13.
 
 Склонируй репозиторий и перейди в него:
 
@@ -68,13 +89,16 @@ python -m pip install .
 python -m pip install ".[voice]"
 ```
 
-Если пакет будет опубликован в PyPI, его можно будет устанавливать изолированно:
+Открыть графическое окно настройки после установки из исходного кода:
 
 ```bash
-pipx install scooters-codex-telegram-bot
+scooters-codex-telegram-bot-gui
 ```
 
 ## Настройка
+
+В готовом приложении все параметры задаются через графическое окно. Ручная
+настройка `.env` остаётся для серверов, автоматизации и установки из исходников.
 
 Скопируй пример рядом с проектом:
 
@@ -118,7 +142,7 @@ scooters-codex-telegram-bot
 python run_bot.py
 ```
 
-## Где хранится конфигурация
+## Где хранятся настройки
 
 CLI ищет конфигурацию в следующем порядке:
 
@@ -134,6 +158,12 @@ CLI ищет конфигурацию в следующем порядке:
 | macOS | `~/Library/Application Support/scooters-codex-telegram-bot/.env` | там же, `state.sqlite3` |
 | Linux | `~/.config/scooters-codex-telegram-bot/.env` | `~/.local/state/scooters-codex-telegram-bot/state.sqlite3` |
 | Windows | `%APPDATA%\scooters-codex-telegram-bot\.env` | `%LOCALAPPDATA%\scooters-codex-telegram-bot\state.sqlite3` |
+
+Графическое приложение пытается сохранить токен Telegram в системном хранилище
+секретов: Keychain на macOS, Credential Manager на Windows или Secret Service
+на Linux. Если хранилище недоступно, токен записывается в `.env`, созданный
+атомарно с правами только для текущего пользователя. Остальные настройки всегда
+хранятся в `.env`, чтобы фоновый процесс мог прочитать их без открытого окна.
 
 Фактически выбранный путь можно вывести командой:
 
@@ -207,6 +237,26 @@ AUTO_APPROVE_READ_ROOTS=/path/to/project,/path/to/read-only-docs
 отменяет только текущую форму. Подтверждения и вопросы ожидают ответа до 24 часов.
 
 ## Фоновый запуск
+
+Проще всего открыть `CodexTelegramBot` и нажать «Сохранить и запустить в фоне».
+Приложение само создаст службу текущего пользователя: systemd user service в
+Linux, LaunchAgent в macOS или задачу Task Scheduler в Windows. Статус и
+управление доступны в том же окне.
+
+Те же операции можно выполнить из терминала:
+
+```bash
+scooters-codex-telegram-bot --install-service
+scooters-codex-telegram-bot --service-status
+scooters-codex-telegram-bot --restart-service
+scooters-codex-telegram-bot --stop-service
+scooters-codex-telegram-bot --uninstall-service
+```
+
+Для готового приложения вместо имени команды укажи путь к исполняемому файлу.
+Опция `--config /path/to/.env` позволяет выбрать явный файл настроек.
+
+### Ручная установка
 
 Готовые шаблоны лежат в `deploy/`. В них нет секретов: замени значения
 `__BOT_EXECUTABLE__`, `__CONFIG_FILE__` и `__WORKING_DIRECTORY__` абсолютными
@@ -283,12 +333,32 @@ python -m unittest discover -s tests -v
 python -m build
 ```
 
-GitHub Actions проверяет Linux, macOS и Windows на Python 3.10 и 3.13.
+Локальная сборка готового приложения для текущей ОС:
+
+```bash
+python -m pip install -e ".[desktop]"
+python scripts/build_executable.py
+```
+
+Результат появится в `dist/`. PyInstaller не выполняет кросс-компиляцию, поэтому
+GitHub Actions собирает отдельный артефакт на Linux, macOS и Windows. Для
+публикации релиза создай и отправь тег:
+
+```bash
+git tag v0.3.0
+git push origin v0.3.0
+```
+
+Workflow проверит код, соберёт три архива и прикрепит их к GitHub Release.
+Обычные проверки pull request продолжают выполняться на Python 3.10 и 3.13.
 
 ## Безопасность
 
 - бот не открывает входящий порт и использует Telegram long polling;
-- токен не передаётся Codex и не должен попадать в Git или логи;
+- токен не передаётся Codex, не попадает в логи и по возможности хранится в
+  системном хранилище секретов;
+- `.env` с резервной копией токена создаётся только с правами владельца и не
+  должен попадать в Git;
 - сообщения принимаются только в личных чатах и только от allowlist;
 - запросы секретных значений в MCP-формах отклоняются;
 - политика Codex остаётся `workspace-write` и `on-request`;

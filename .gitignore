@@ -5,6 +5,7 @@ __pycache__/
 .DS_Store
 var/
 .venv/
+*.spec
 .pytest_cache/
 .ruff_cache/
 build/
