@@ -4,15 +4,18 @@ import asyncio
 import unittest
 from pathlib import Path
 
-from scooters_codex_telegram_bot.approvals import is_safe_read_only_approval
-from scooters_codex_telegram_bot.bot import (
+from codex_telegram_bot.approvals import (
+    assess_safe_read_only_approval,
+    is_safe_read_only_approval,
+)
+from codex_telegram_bot.bot import (
     TELEGRAM_CLIENT_INSTRUCTIONS,
     ActiveTurn,
     TelegramCodexBot,
 )
-from scooters_codex_telegram_bot.config import Config
-from scooters_codex_telegram_bot.state import OutboxMessage
-from scooters_codex_telegram_bot.telegram_api import TelegramError
+from codex_telegram_bot.config import Config
+from codex_telegram_bot.state import OutboxMessage
+from codex_telegram_bot.telegram_api import TelegramError
 
 CHAT_ID = 101
 USER_ID = 202
@@ -205,6 +208,10 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
             turn_start["input"],
             [{"type": "text", "text": "Проверь изменения в scooters-core"}],
         )
+        self.assertEqual(turn_start["cwd"], "/tmp")
+        self.assertEqual(turn_start["sandboxPolicy"]["type"], "workspaceWrite")
+        self.assertIn("/tmp", turn_start["sandboxPolicy"]["writableRoots"])
+        self.assertTrue(turn_start["sandboxPolicy"]["networkAccess"])
 
     async def test_voice_message_over_duration_limit_is_rejected(self) -> None:
         telegram = FakeTelegram()
@@ -284,6 +291,93 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
         for params in cases:
             with self.subTest(params=params):
                 self.assertFalse(is_safe_read_only_approval(params, roots))
+
+    def test_allowlisted_arc_reads_are_auto_approved_when_unclassified(self) -> None:
+        roots = (Path("/tmp/project"),)
+        commands = [
+            "arc status",
+            "arc diff -- src/main.py",
+            "arc show deadbeef",
+            "arc info",
+            "arc ls src",
+            "arc log -n 5",
+            "arc root",
+            "arc pr status",
+            "arc pr changes 12345",
+            "/bin/zsh -lc 'arc status'",
+        ]
+
+        for command in commands:
+            with self.subTest(command=command):
+                assessment = assess_safe_read_only_approval(
+                    {
+                        "command": command,
+                        "cwd": "/tmp/project",
+                        "commandActions": [{"type": "unknown"}],
+                        "availableDecisions": ["accept", "decline"],
+                    },
+                    roots,
+                )
+                self.assertTrue(assessment.approved)
+                self.assertEqual(assessment.reason, "allowlisted_arc_read")
+
+    def test_arc_read_allowlist_rejects_mutation_and_shell_composition(self) -> None:
+        roots = (Path("/tmp/project"),)
+        commands = [
+            "arc checkout trunk",
+            "arc commit -m change",
+            "arc status; rm -rf output",
+            "arc status && arc checkout trunk",
+            "arc diff --ext-diff=/tmp/helper",
+            "arc log --template custom",
+            "/bin/zsh -lc 'arc status | tee status.txt'",
+        ]
+
+        for command in commands:
+            with self.subTest(command=command):
+                assessment = assess_safe_read_only_approval(
+                    {
+                        "command": command,
+                        "cwd": "/tmp/project",
+                        "commandActions": [{"type": "unknown"}],
+                    },
+                    roots,
+                )
+                self.assertFalse(assessment.approved)
+                self.assertEqual(assessment.reason, "unclassified_command")
+
+    def test_arc_read_allowlist_allows_only_loopback_network_context(self) -> None:
+        roots = (Path("/tmp/project"),)
+        base = {
+            "command": "arc status",
+            "cwd": "/tmp/project",
+            "commandActions": [{"type": "unknown"}],
+        }
+
+        loopback = assess_safe_read_only_approval(
+            {**base, "networkApprovalContext": {"host": "127.0.0.1"}}, roots
+        )
+        external = assess_safe_read_only_approval(
+            {**base, "networkApprovalContext": {"host": "arc.example.test"}}, roots
+        )
+
+        self.assertTrue(loopback.approved)
+        self.assertFalse(external.approved)
+        self.assertEqual(external.reason, "external_network_access")
+
+    def test_auto_approval_reports_a_non_sensitive_rejection_reason(self) -> None:
+        assessment = assess_safe_read_only_approval(
+            {
+                "command": "arc checkout trunk",
+                "cwd": "/tmp/project",
+                "commandActions": [{"type": "unknown"}],
+            },
+            (Path("/tmp/project"),),
+        )
+
+        self.assertFalse(assessment.approved)
+        self.assertEqual(assessment.reason, "unclassified_command")
+        self.assertEqual(assessment.action_types, ("unknown",))
 
     async def test_submit_prompt_does_not_send_started_acknowledgement(self) -> None:
         telegram = FakeTelegram()
@@ -412,7 +506,7 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, {"decision": "decline"})
         self.assertEqual(bot._pending_callbacks, {})
 
-    async def test_thread_params_disable_programmatic_exec_via_instructions(self) -> None:
+    async def test_thread_instructions_do_not_forbid_available_tools(self) -> None:
         bot = make_bot()
 
         start_params = bot._start_thread_params()
@@ -424,7 +518,10 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             resume_params["developerInstructions"], TELEGRAM_CLIENT_INSTRUCTIONS
         )
-        self.assertIn("Never call those tools", TELEGRAM_CLIENT_INSTRUCTIONS)
+        self.assertIn("Use the shell", TELEGRAM_CLIENT_INSTRUCTIONS)
+        self.assertNotIn("Never call those tools", TELEGRAM_CLIENT_INSTRUCTIONS)
+        self.assertIn("internal tool-call payload", TELEGRAM_CLIENT_INSTRUCTIONS)
+        self.assertIn("JSON", TELEGRAM_CLIENT_INSTRUCTIONS)
 
     async def test_dynamic_tool_call_returns_retryable_failure(self) -> None:
         bot = make_bot()

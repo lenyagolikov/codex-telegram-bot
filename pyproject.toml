@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "scooters-codex-telegram-bot"
+name = "codex-telegram-bot"
 dynamic = ["version"]
 description = "A private Telegram bridge to Codex App Server"
 readme = "README.md"
@@ -21,19 +21,29 @@ dependencies = []
 
 [project.optional-dependencies]
 voice = ["faster-whisper>=1.1,<2"]
+desktop = [
+    "customtkinter>=5.2,<6",
+    "keyring>=25,<26",
+    "pillow>=11,<13",
+    "pyinstaller>=6.12,<7",
+]
 dev = [
     "build>=1.2,<2",
     "ruff>=0.9,<1",
 ]
 
 [project.scripts]
-scooters-codex-telegram-bot = "scooters_codex_telegram_bot.main:main"
+codex-telegram-bot = "codex_telegram_bot.main:main"
+codex-telegram-bot-gui = "codex_telegram_bot.desktop:main"
 
 [tool.setuptools.dynamic]
-version = {attr = "scooters_codex_telegram_bot.__version__"}
+version = {attr = "codex_telegram_bot.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+codex_telegram_bot = ["assets/*.png"]
 
 [tool.ruff]
 line-length = 100

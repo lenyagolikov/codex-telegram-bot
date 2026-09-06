@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import os
+import stat
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scooters_codex_telegram_bot.config import (
+from codex_telegram_bot.config import (
     Config,
     ConfigError,
     default_config_path,
+    default_log_dir,
     default_state_path,
+    read_dotenv,
+    write_dotenv,
 )
 
 
@@ -42,7 +46,7 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with (
-                patch("scooters_codex_telegram_bot.config.sys.platform", "linux"),
+                patch("codex_telegram_bot.config.sys.platform", "linux"),
                 patch.dict(
                     os.environ,
                     {
@@ -54,11 +58,11 @@ class ConfigTests(unittest.TestCase):
             ):
                 self.assertEqual(
                     default_config_path(),
-                    root / "config" / "scooters-codex-telegram-bot" / ".env",
+                    root / "config" / "codex-telegram-bot" / ".env",
                 )
                 self.assertEqual(
                     default_state_path(),
-                    root / "state" / "scooters-codex-telegram-bot" / "state.sqlite3",
+                    root / "state" / "codex-telegram-bot" / "state.sqlite3",
                 )
 
     def test_invalid_ip_family_is_rejected(self) -> None:
@@ -75,6 +79,64 @@ class ConfigTests(unittest.TestCase):
                 clear=True,
             ), self.assertRaisesRegex(ConfigError, "TELEGRAM_IP_FAMILY"):
                 Config.from_environment(root / "missing.env")
+
+    def test_dotenv_round_trip_supports_spaces_and_quotes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "settings" / ".env"
+            write_dotenv(
+                path,
+                {
+                    "TELEGRAM_BOT_TOKEN": 'token with "quotes"',
+                    "TELEGRAM_ALLOWED_USER_IDS": "101,202",
+                    "CODEX_CWD": "/tmp/project with spaces",
+                    "UNKNOWN_VALUE": "not-written",
+                },
+            )
+
+            values = read_dotenv(path)
+
+            self.assertEqual(values["TELEGRAM_BOT_TOKEN"], 'token with "quotes"')
+            self.assertEqual(values["CODEX_CWD"], "/tmp/project with spaces")
+            self.assertNotIn("UNKNOWN_VALUE", values)
+            if sys.platform != "win32":
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_from_mapping_does_not_mutate_process_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            values = {
+                "TELEGRAM_BOT_TOKEN": "test-token",
+                "CODEX_BIN": sys.executable,
+                "CODEX_CWD": str(root),
+            }
+            with patch.dict(os.environ, {}, clear=True):
+                config = Config.from_mapping(values)
+                self.assertNotIn("TELEGRAM_BOT_TOKEN", os.environ)
+
+            self.assertEqual(config.telegram_token, "test-token")
+
+    def test_remote_validation_does_not_require_local_paths(self) -> None:
+        config = Config.from_mapping(
+            {
+                "TELEGRAM_BOT_TOKEN": "test-token",
+                "CODEX_BIN": "/remote/bin/codex",
+                "CODEX_CWD": "/remote/workspace",
+            },
+            validate_local_paths=False,
+        )
+
+        self.assertEqual(config.codex_bin, "/remote/bin/codex")
+        self.assertEqual(config.codex_cwd, Path("/remote/workspace"))
+
+    def test_default_macos_log_path(self) -> None:
+        with patch("codex_telegram_bot.config.sys.platform", "darwin"):
+            self.assertEqual(
+                default_log_dir(),
+                Path.home()
+                / "Library"
+                / "Logs"
+                / "codex-telegram-bot",
+            )
 
 
 if __name__ == "__main__":

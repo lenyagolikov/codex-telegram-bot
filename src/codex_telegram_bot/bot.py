@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .app_server import AppServerError, CodexAppServer
-from .approvals import approval_path, is_safe_read_only_approval
+from .approvals import approval_path, assess_safe_read_only_approval
 from .config import Config
 from .state import OutboxMessage, StateStore
 from .telegram_api import TelegramApi, TelegramError
@@ -25,12 +25,11 @@ INTERACTION_TIMEOUT_SECONDS = 24 * 60 * 60
 _MCP_FORM_CANCELLED = object()
 _MCP_FORM_SKIPPED = object()
 TELEGRAM_CLIENT_INSTRUCTIONS = """\
-This Codex thread is controlled through a Telegram client. The client does not
-provide the programmable `functions.exec` tool or any custom tool named `exec`.
-Never call those tools. Call built-in tools such as `exec_command`, MCP tools,
-and web tools directly instead; sequential calls are acceptable. Never ask the
-user to provide an internal tool-call payload or protocol JSON. Ask for input
-only when the information or decision genuinely has to come from the user.
+This Codex thread is controlled through a Telegram client. Use the shell,
+filesystem, MCP, and web tools available in the session whenever the task needs
+them. Never ask the user to provide an internal tool-call payload or protocol
+JSON. Ask for input only when the information or decision genuinely has to come
+from the user.
 """
 
 
@@ -444,6 +443,8 @@ class TelegramCodexBot:
                 "threadId": thread_id,
                 "input": input_items,
                 "clientUserMessageId": f"telegram:{chat_id}:{message_id}",
+                "cwd": str(self._config.codex_cwd),
+                "sandboxPolicy": self._turn_sandbox_policy(),
             }
             if self._config.reasoning_effort is not None:
                 params["effort"] = self._config.reasoning_effort
@@ -518,6 +519,18 @@ class TelegramCodexBot:
 
     def _resume_thread_params(self, thread_id: str) -> dict[str, Any]:
         return {**self._common_thread_params(), "threadId": thread_id}
+
+    def _turn_sandbox_policy(self) -> dict[str, Any]:
+        writable_roots = [str(self._config.codex_cwd)]
+        arc_cache = Path.home() / ".arc"
+        if arc_cache.is_dir():
+            writable_roots.append(str(arc_cache.resolve()))
+        return {
+            "type": "workspaceWrite",
+            "writableRoots": writable_roots,
+            # Arc mounts communicate with their local process through localhost.
+            "networkAccess": True,
+        }
 
     def _remember_thread_status(self, response: dict[str, Any]) -> None:
         thread = response["thread"]
@@ -715,26 +728,24 @@ class TelegramCodexBot:
             return {"decision": "decline"}
 
         kind = "command" if "commandExecution" in method else "file"
-        if (
-            kind == "command"
-            and self._config.auto_approve_safe_read_only
-            and is_safe_read_only_approval(
+        if kind == "command" and self._config.auto_approve_safe_read_only:
+            assessment = assess_safe_read_only_approval(
                 params, self._config.auto_approve_read_roots
             )
-        ):
-            action_types = sorted(
-                {
-                    str(action.get("type"))
-                    for action in params.get("commandActions") or []
-                    if isinstance(action, dict)
-                }
-            )
+            if assessment.approved:
+                LOGGER.info(
+                    "Auto-approved read-only command; source=%s action_types=%s cwd=%s",
+                    assessment.reason,
+                    ",".join(assessment.action_types) or "<none>",
+                    approval_path(params.get("cwd")) or "<unknown>",
+                )
+                return {"decision": "accept"}
             LOGGER.info(
-                "Auto-approved read-only command; action_types=%s cwd=%s",
-                ",".join(action_types),
+                "Read-only auto-approval skipped; reason=%s action_types=%s cwd=%s",
+                assessment.reason,
+                ",".join(assessment.action_types) or "<none>",
                 approval_path(params.get("cwd")) or "<unknown>",
             )
-            return {"decision": "accept"}
 
         self._thread_statuses[thread_id] = {
             "type": "active",

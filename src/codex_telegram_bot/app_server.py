@@ -14,6 +14,10 @@ APP_SERVER_DISABLED_FEATURES = (
     "code_mode",
     "code_mode_buffered_exec",
     "code_mode_only",
+    # The Telegram client handles native command-approval requests, but it is
+    # not a JavaScript host for the programmable unified `functions.exec` tool.
+    # Keep Codex on its native shell tool so Arc and local files stay available.
+    "unified_exec",
 )
 NotificationHandler = Callable[[str, dict[str, Any]], Awaitable[None]]
 ServerRequestHandler = Callable[[str, dict[str, Any]], Awaitable[Any]]
@@ -57,8 +61,8 @@ class CodexAppServer:
             "initialize",
             {
                 "clientInfo": {
-                    "name": "scooters-codex-telegram-bot",
-                    "title": "Scooters Codex Telegram Bot",
+                    "name": "codex-telegram-bot",
+                    "title": "Codex Telegram Bot",
                     "version": __version__,
                 },
                 "capabilities": {"experimentalApi": True},

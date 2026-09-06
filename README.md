@@ -1,11 +1,12 @@
-# Scooters Codex Telegram Bot
+# Codex Telegram Bot
 
 Приватный Telegram-интерфейс для Codex. Бот принимает текстовые и голосовые
 сообщения, передаёт их в `codex app-server` и возвращает в Telegram финальный
 ответ. Поддерживаются macOS, Linux и Windows; Docker не требуется.
 
-> Проект запускает Codex на том же компьютере, где работает бот. Он не является
-> удалённым прокси к уже открытому Codex Desktop.
+Бот можно запустить на том же компьютере или развернуть из графического
+приложения на постоянно включённом Linux-сервере по SSH. После удалённого
+запуска окно и Mac можно закрыть: Telegram обслуживает серверный `systemd`.
 
 ## Возможности
 
@@ -18,26 +19,96 @@
 - вопросы Codex, подтверждения и MCP-формы через текст и inline-кнопки;
 - опциональное локальное распознавание голосовых через `faster-whisper`;
 - опциональное авто-подтверждение строго ограниченных операций чтения;
-- allowlist пользователей и работа только в личных чатах.
+- allowlist пользователей и работа только в личных чатах;
+- установка, управление и просмотр логов удалённого процесса по SSH.
 
 ## Требования
 
-- Python 3.10–3.13;
+- для готового приложения Python не нужен;
 - установленная команда `codex`;
 - выполненный `codex login`;
 - Telegram-бот, созданный через [@BotFather](https://t.me/BotFather).
+
+Для удалённого режима дополнительно нужны OpenSSH на локальном компьютере и
+Linux-сервер с Python 3.10+, Codex CLI и пользовательским `systemd`.
 
 Codex CLI должен самостоятельно запускаться на выбранной машине. Актуальные
 сведения по App Server находятся в
 [официальной документации Codex](https://developers.openai.com/codex/app-server/).
 
-## Установка из GitHub
+## Два способа запуска
+
+Проект предоставляет две оболочки над одним ядром бота:
+
+- `codex-telegram-bot-gui` — графическая настройка и управление;
+- `codex-telegram-bot` — обычный terminal/headless-запуск, в том
+  числе как `systemd` user service.
+
+Удалённая установка не запускает и не копирует GUI. На Linux-сервере остаются
+только модули headless-runtime, поэтому изменения протокола App Server,
+Telegram-команд и безопасного allowlist одинаковы в обоих способах запуска.
+GUI при этом отвечает только за настройку и управление процессом.
+
+## Установка готового приложения
+
+Скачай архив для своей ОС со страницы
+[GitHub Releases](https://github.com/lenyagolikov/codex-telegram-bot/releases):
+
+- `CodexTelegramBot-macos-arm64.zip` для Mac с Apple Silicon;
+- `CodexTelegramBot-linux-x86_64.tar.gz` для Linux x86_64;
+- `CodexTelegramBot-windows-x86_64.zip` для Windows x86_64.
+
+Распакуй архив. На macOS перемести `CodexTelegramBot.app` в `/Applications` или
+`~/Applications`, затем открой установленную копию двойным кликом в Finder. Не
+запускай внутренний файл из `Contents/MacOS` и не закрепляй в Dock копию из
+каталога загрузок или `dist`: после обновления такой ярлык сломается. Чтобы
+закрепить приложение, нажми правой кнопкой по его значку в Dock и выбери
+«Параметры» → «Оставить в Dock». Само приложение при запуске регистрирует свой
+bundle в LaunchServices.
+
+На Linux и Windows запусти исполняемый файл `CodexTelegramBot`. Откроется окно
+настройки: укажи токен Telegram-бота, разрешённые Telegram user ID, рабочую
+папку и путь к Codex CLI. Кнопка «Сохранить и запустить в фоне» установит
+системный сервис и запустит бота. После установки сервиса не перемещай
+приложение или исполняемый файл — сначала останови сервис, перенеси файл и
+установи сервис заново.
+
+### Запуск на удалённом сервере
+
+1. Настрой вход на сервер по SSH-ключу без интерактивного запроса пароля.
+2. Установи и авторизуй Codex CLI на сервере командой `codex login`.
+3. В приложении выбери «На сервере» и заполни вкладку «Удалённый сервер».
+4. Нажми «Проверить подключение», затем «Сохранить и запустить».
+
+Приложение передаст на сервер только Python-runtime бота и его настройки,
+создаст user-service `codex-telegram-bot.service` и запустит его.
+Локальный экземпляр перед этим автоматически останавливается, чтобы один
+Telegram-токен не опрашивался двумя процессами одновременно.
+
+Для работы после выхода из SSH и выключения локального компьютера на сервере
+должен быть включён linger:
+
+```bash
+loginctl enable-linger "$USER"
+```
+
+Обычно эту команду выполняет администратор сервера один раз. Кнопки остановки,
+перезапуска и удаления автозапуска работают с выбранным режимом. «Открыть логи»
+в удалённом режиме загружает последние строки через SSH и показывает их в окне.
+
+Пока релизы не подписаны сертификатом разработчика, macOS или Windows могут
+показать системное предупреждение при первом запуске. Скачивай приложение
+только со страницы релизов этого репозитория.
+
+## Установка из исходного кода
+
+Для этого варианта нужен Python 3.10–3.13.
 
 Склонируй репозиторий и перейди в него:
 
 ```bash
-git clone https://github.com/lenyagolikov/scooters-codex-telegram-bot.git
-cd scooters-codex-telegram-bot
+git clone https://github.com/lenyagolikov/codex-telegram-bot.git
+cd codex-telegram-bot
 ```
 
 ### macOS и Linux
@@ -68,13 +139,16 @@ python -m pip install .
 python -m pip install ".[voice]"
 ```
 
-Если пакет будет опубликован в PyPI, его можно будет устанавливать изолированно:
+Открыть графическое окно настройки после установки из исходного кода:
 
 ```bash
-pipx install scooters-codex-telegram-bot
+codex-telegram-bot-gui
 ```
 
 ## Настройка
+
+В готовом приложении все параметры задаются через графическое окно. Ручная
+настройка `.env` остаётся для серверов, автоматизации и установки из исходников.
 
 Скопируй пример рядом с проектом:
 
@@ -103,13 +177,13 @@ CODEX_CWD=/absolute/path/to/project
 Проверка конфигурации без запуска бота:
 
 ```bash
-scooters-codex-telegram-bot --check
+codex-telegram-bot --check
 ```
 
 Запуск:
 
 ```bash
-scooters-codex-telegram-bot
+codex-telegram-bot
 ```
 
 Совместимый старый способ также оставлен:
@@ -118,7 +192,7 @@ scooters-codex-telegram-bot
 python run_bot.py
 ```
 
-## Где хранится конфигурация
+## Где хранятся настройки
 
 CLI ищет конфигурацию в следующем порядке:
 
@@ -131,14 +205,24 @@ CLI ищет конфигурацию в следующем порядке:
 
 | ОС | Конфигурация | SQLite-состояние |
 |---|---|---|
-| macOS | `~/Library/Application Support/scooters-codex-telegram-bot/.env` | там же, `state.sqlite3` |
-| Linux | `~/.config/scooters-codex-telegram-bot/.env` | `~/.local/state/scooters-codex-telegram-bot/state.sqlite3` |
-| Windows | `%APPDATA%\scooters-codex-telegram-bot\.env` | `%LOCALAPPDATA%\scooters-codex-telegram-bot\state.sqlite3` |
+| macOS | `~/Library/Application Support/codex-telegram-bot/.env` | там же, `state.sqlite3` |
+| Linux | `~/.config/codex-telegram-bot/.env` | `~/.local/state/codex-telegram-bot/state.sqlite3` |
+| Windows | `%APPDATA%\codex-telegram-bot\.env` | `%LOCALAPPDATA%\codex-telegram-bot\state.sqlite3` |
+
+Графическое приложение пытается сохранить токен Telegram в системном хранилище
+секретов: Keychain на macOS, Credential Manager на Windows или Secret Service
+на Linux. Если хранилище недоступно, токен записывается в `.env`, созданный
+атомарно с правами только для текущего пользователя. Остальные настройки всегда
+хранятся в `.env`, чтобы фоновый процесс мог прочитать их без открытого окна.
+
+В удалённом режиме отдельная runtime-конфигурация записывается в
+`REMOTE_INSTALL_DIR/config/.env` на сервере с правами `600`. Токен передаётся
+по зашифрованному SSH-каналу через stdin и не включается в аргументы команд.
 
 Фактически выбранный путь можно вывести командой:
 
 ```bash
-scooters-codex-telegram-bot --show-config-path
+codex-telegram-bot --show-config-path
 ```
 
 ## Переменные окружения
@@ -161,6 +245,15 @@ scooters-codex-telegram-bot --show-config-path
 | `VOICE_MAX_FILE_BYTES` | предел размера | `20971520` |
 | `AUTO_APPROVE_SAFE_READ_ONLY` | узкое автоподтверждение чтения | `false` |
 | `AUTO_APPROVE_READ_ROOTS` | разрешённые корни через запятую | `CODEX_CWD` |
+| `RUN_MODE` | режим GUI: `local` или `remote` | `local` |
+| `REMOTE_SSH_HOST` | адрес удалённого Linux-сервера | пусто |
+| `REMOTE_SSH_USER` | SSH-пользователь | текущий пользователь |
+| `REMOTE_SSH_PORT` | SSH-порт | `22` |
+| `REMOTE_SSH_IDENTITY_FILE` | необязательный путь к приватному SSH-ключу | SSH agent/config |
+| `REMOTE_INSTALL_DIR` | runtime, состояние и логи на сервере | `~/.local/share/codex-telegram-bot` |
+| `REMOTE_CODEX_CWD` | рабочая директория Codex на сервере | `~/arcadia` |
+| `REMOTE_CODEX_BIN` | команда или путь Codex CLI на сервере | `codex` |
+| `REMOTE_PYTHON_BIN` | Python 3.10+ на сервере | `/usr/bin/python3` |
 
 Настоящие переменные окружения имеют приоритет над значениями из `.env`.
 
@@ -178,6 +271,10 @@ WHISPER_LANGUAGE=ru
 Временный аудиофайл создаётся с ограниченными правами и удаляется после
 обработки. Аудио и текст расшифровки не записываются в лог.
 
+В удалённом режиме `faster-whisper` должен быть установлен для Python из поля
+«Команда Python». Можно указать абсолютный путь к Python существующего
+virtualenv, например `/home/user/codex-telegram-bot/.venv/bin/python`.
+
 ## Автоматическое подтверждение чтения
 
 Функция выключена по умолчанию. Для включения:
@@ -187,13 +284,18 @@ AUTO_APPROVE_SAFE_READ_ONLY=true
 AUTO_APPROVE_READ_ROOTS=/path/to/project,/path/to/read-only-docs
 ```
 
-Автоматически подтверждается только запрос, для которого Codex App Server
-передал непустой список действий и классифицировал каждое как `read`,
-`listFiles` или `search`. Все пути должны оставаться внутри разрешённых корней.
+Автоматически подтверждаются структурированные действия `read`, `listFiles` и
+`search`, если все пути остаются внутри разрешённых корней. Для рабочих копий
+Arcadia также разрешён фиксированный набор read-only команд Arc: `status`,
+`diff`, `show`, `info`, `ls`, `log`, `root`, а также `pr status`, `pr changes`
+и `pr active-diff`. Это покрывает команды, которые App Server иногда помечает
+как `unknown`.
 
-Неизвестные действия, запись, сеть, дополнительные права на запись и чтение
+Shell-цепочки, редиректы, потенциально исполняющие внешнюю программу параметры,
+изменяющие команды Arc, внешняя сеть, дополнительные права на запись и чтение
 чувствительных файлов (`.env`, SSH/Codex-конфигурация, shell history и ключи)
-автоматически не подтверждаются и показываются пользователю в Telegram.
+автоматически не подтверждаются и показываются пользователю в Telegram. В лог
+записывается безопасный код причины отказа без текста команды и её аргументов.
 
 ## Команды Telegram
 
@@ -208,6 +310,26 @@ AUTO_APPROVE_READ_ROOTS=/path/to/project,/path/to/read-only-docs
 
 ## Фоновый запуск
 
+Проще всего открыть `CodexTelegramBot` и нажать «Сохранить и запустить в фоне».
+Приложение само создаст службу текущего пользователя: systemd user service в
+Linux, LaunchAgent в macOS или задачу Task Scheduler в Windows. Статус и
+управление доступны в том же окне.
+
+Те же операции можно выполнить из терминала:
+
+```bash
+codex-telegram-bot --install-service
+codex-telegram-bot --service-status
+codex-telegram-bot --restart-service
+codex-telegram-bot --stop-service
+codex-telegram-bot --uninstall-service
+```
+
+Для готового приложения вместо имени команды укажи путь к исполняемому файлу.
+Опция `--config /path/to/.env` позволяет выбрать явный файл настроек.
+
+### Ручная установка
+
 Готовые шаблоны лежат в `deploy/`. В них нет секретов: замени значения
 `__BOT_EXECUTABLE__`, `__CONFIG_FILE__` и `__WORKING_DIRECTORY__` абсолютными
 путями своей установки.
@@ -215,25 +337,25 @@ AUTO_APPROVE_READ_ROOTS=/path/to/project,/path/to/read-only-docs
 Узнать путь CLI после активации virtualenv:
 
 ```bash
-command -v scooters-codex-telegram-bot
+command -v codex-telegram-bot
 ```
 
 На Windows:
 
 ```powershell
-(Get-Command scooters-codex-telegram-bot).Source
+(Get-Command codex-telegram-bot).Source
 ```
 
 ### Linux: systemd user service
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp deploy/linux/scooters-codex-telegram-bot.service.example \
-  ~/.config/systemd/user/scooters-codex-telegram-bot.service
+cp deploy/linux/codex-telegram-bot.service.example \
+  ~/.config/systemd/user/codex-telegram-bot.service
 # Отредактируй три __PLACEHOLDER__ в скопированном файле.
 systemctl --user daemon-reload
-systemctl --user enable --now scooters-codex-telegram-bot
-systemctl --user status scooters-codex-telegram-bot
+systemctl --user enable --now codex-telegram-bot
+systemctl --user status codex-telegram-bot
 ```
 
 Для работы без открытой SSH-сессии администратор может включить systemd linger:
@@ -245,12 +367,12 @@ loginctl enable-linger "$USER"
 ### macOS: LaunchAgent
 
 ```bash
-cp deploy/macos/com.scooters.codex-telegram-bot.plist.example \
-  ~/Library/LaunchAgents/com.scooters.codex-telegram-bot.plist
+cp deploy/macos/com.lenyagolikov.codex-telegram-bot.plist.example \
+  ~/Library/LaunchAgents/com.lenyagolikov.codex-telegram-bot.plist
 # Отредактируй __PLACEHOLDER__ и создай директорию для логов.
 launchctl bootstrap "gui/$(id -u)" \
-  ~/Library/LaunchAgents/com.scooters.codex-telegram-bot.plist
-launchctl print "gui/$(id -u)/com.scooters.codex-telegram-bot"
+  ~/Library/LaunchAgents/com.lenyagolikov.codex-telegram-bot.plist
+launchctl print "gui/$(id -u)/com.lenyagolikov.codex-telegram-bot"
 ```
 
 LaunchAgent не выполняется, пока Mac спит.
@@ -261,18 +383,28 @@ LaunchAgent не выполняется, пока Mac спит.
 
 ```powershell
 .\deploy\windows\install-task.ps1 `
-  -BotExecutable (Get-Command scooters-codex-telegram-bot).Source `
-  -ConfigFile "$env:APPDATA\scooters-codex-telegram-bot\.env"
+  -BotExecutable (Get-Command codex-telegram-bot).Source `
+  -ConfigFile "$env:APPDATA\codex-telegram-bot\.env"
 ```
 
 Проверка и удаление задачи:
 
 ```powershell
-Get-ScheduledTask -TaskName "Scooters Codex Telegram Bot"
-Unregister-ScheduledTask -TaskName "Scooters Codex Telegram Bot"
+Get-ScheduledTask -TaskName "Codex Telegram Bot"
+Unregister-ScheduledTask -TaskName "Codex Telegram Bot"
 ```
 
 Одновременно должна работать только одна копия бота с одним Telegram-токеном.
+
+При стандартной удалённой установке файлы находятся здесь:
+
+```text
+~/.local/share/codex-telegram-bot/runtime/  # headless-код
+~/.local/share/codex-telegram-bot/config/.env
+~/.config/systemd/user/codex-telegram-bot.service
+```
+
+Конфигурация содержит секреты и должна оставаться доступной только владельцу.
 
 ## Разработка
 
@@ -283,12 +415,32 @@ python -m unittest discover -s tests -v
 python -m build
 ```
 
-GitHub Actions проверяет Linux, macOS и Windows на Python 3.10 и 3.13.
+Локальная сборка готового приложения для текущей ОС:
+
+```bash
+python -m pip install -e ".[desktop]"
+python scripts/build_executable.py
+```
+
+Результат появится в `dist/`. PyInstaller не выполняет кросс-компиляцию, поэтому
+GitHub Actions собирает отдельный артефакт на Linux, macOS и Windows. Для
+публикации релиза создай и отправь тег:
+
+```bash
+git tag v0.4.0
+git push origin v0.4.0
+```
+
+Workflow проверит код, соберёт три архива и прикрепит их к GitHub Release.
+Обычные проверки pull request продолжают выполняться на Python 3.10 и 3.13.
 
 ## Безопасность
 
 - бот не открывает входящий порт и использует Telegram long polling;
-- токен не передаётся Codex и не должен попадать в Git или логи;
+- токен не передаётся Codex, не попадает в логи и по возможности хранится в
+  системном хранилище секретов;
+- `.env` с резервной копией токена создаётся только с правами владельца и не
+  должен попадать в Git;
 - сообщения принимаются только в личных чатах и только от allowlist;
 - запросы секретных значений в MCP-формах отклоняются;
 - политика Codex остаётся `workspace-write` и `on-request`;
@@ -301,7 +453,8 @@ GitHub Actions проверяет Linux, macOS и Windows на Python 3.10 и 3.
 - задачи, созданные через App Server, могут отображаться в Codex Desktop вне
   конкретного Desktop-проекта;
 - доступность MCP зависит от конфигурации и окружения процесса бота;
-- фоновый процесс на ноутбуке не работает во время сна устройства.
+- фоновый процесс на ноутбуке не работает во время сна устройства;
+- удалённое развёртывание из GUI поддерживает Linux-серверы с user systemd.
 
 Интеграция использует официальный
 [Telegram Bot API](https://core.telegram.org/bots/api) и
