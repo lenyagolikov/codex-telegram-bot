@@ -14,7 +14,7 @@ from typing import Any
 from .app_server import AppServerError, CodexAppServer
 from .approvals import approval_path, assess_safe_read_only_approval
 from .config import Config
-from .state import OutboxMessage, StateStore
+from .state import OutboxMessage, StateStore, TaskRecord
 from .telegram_api import TelegramApi, TelegramError
 from .transcription import VoiceTranscriber, VoiceTranscriptionError
 
@@ -38,6 +38,8 @@ class ActiveTurn:
     chat_id: int
     thread_id: str
     turn_id: str
+    task_id: int = 0
+    task_number: int = 0
     deltas_by_item: dict[str, list[str]] = field(default_factory=dict)
     latest_diff: str = ""
     started_at: float = field(default_factory=time.monotonic)
@@ -62,6 +64,8 @@ class PendingTextInput:
     kind: str
     future: asyncio.Future[Any]
     allow_skip: bool = False
+    task_id: int = 0
+    message_id: int | None = None
 
 
 class TelegramCodexBot:
@@ -78,13 +82,15 @@ class TelegramCodexBot:
         self._app_server = app_server
         self._state = state
         self._voice_transcriber = voice_transcriber
+        self._active_by_task: dict[int, ActiveTurn] = {}
+        # Kept as a compatibility view for integrations which inspect the selected
+        # chat. Task routing itself is keyed by task_id so turns can run concurrently.
         self._active_by_chat: dict[int, ActiveTurn] = {}
         self._active_by_turn: dict[str, ActiveTurn] = {}
         self._completed_before_start_response: set[str] = set()
         self._thread_statuses: dict[str, dict[str, Any]] = {}
-        self._last_diff_by_chat: dict[int, str] = {}
         self._pending_callbacks: dict[str, PendingCallback] = {}
-        self._pending_text_by_chat: dict[int, PendingTextInput] = {}
+        self._pending_text_by_chat: dict[int, list[PendingTextInput]] = {}
         self._outbox_wakeup = asyncio.Event()
         app_server.notification_handler = self._handle_codex_notification
         app_server.server_request_handler = self._handle_codex_request
@@ -161,12 +167,14 @@ class TelegramCodexBot:
             text = str(message["text"]).strip()
         else:
             return
-        command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+        command_parts = text.split(maxsplit=1)
+        command = command_parts[0].split("@", 1)[0].lower()
+        command_argument = command_parts[1].strip() if len(command_parts) > 1 else ""
         message_type = command if command.startswith("/") else "prompt"
         LOGGER.info("Handling Telegram message type=%s", message_type)
-        pending_input = self._pending_text_by_chat.get(chat_id)
-        if pending_input is not None and command not in {"/status", "/help"}:
-            if command == "/cancel":
+        pending_input = self._pending_text_input_for_message(chat_id, message)
+        if pending_input is not None:
+            if command == "/cancel" and not command_argument:
                 self._resolve_pending_text(pending_input, None)
                 if pending_input.kind == "mcp-form":
                     await self._telegram.send_message(
@@ -175,29 +183,50 @@ class TelegramCodexBot:
                         "без этого действия.",
                     )
                 else:
-                    await self._cancel_turn(chat_id)
+                    task = self._state.get_task_by_id(pending_input.task_id)
+                    if task is not None:
+                        await self._cancel_task(task)
+                return
             elif command == "/skip" and pending_input.allow_skip:
                 self._resolve_pending_text(pending_input, _MCP_FORM_SKIPPED)
                 await self._telegram.send_message(chat_id, "Поле пропущено.")
-            elif text.startswith("/"):
+                return
+            elif not text.startswith("/"):
+                await self._handle_pending_text(pending_input, text)
+                return
+            elif command not in {
+                "/start",
+                "/help",
+                "/new",
+                "/list",
+                "/switch",
+                "/result",
+                "/status",
+                "/cancel",
+                "/diff",
+            }:
                 await self._telegram.send_message(
                     chat_id,
                     "Codex ждёт ответ на вопрос. Ответь текстом или используй /cancel"
                     + (" либо /skip." if pending_input.allow_skip else "."),
                 )
-            else:
-                await self._handle_pending_text(pending_input, text)
-            return
+                return
         if command in {"/start", "/help"}:
             await self._send_help(chat_id)
         elif command == "/new":
-            await self._new_thread(chat_id)
+            await self._new_thread(chat_id, user_id, command_argument)
+        elif command == "/list":
+            await self._list_tasks(chat_id)
+        elif command == "/switch":
+            await self._switch_task(chat_id, command_argument)
+        elif command == "/result":
+            await self._send_result(chat_id, command_argument)
         elif command == "/status":
-            await self._send_status(chat_id)
+            await self._send_status(chat_id, command_argument)
         elif command == "/cancel":
-            await self._cancel_turn(chat_id)
+            await self._cancel_turn(chat_id, command_argument)
         elif command == "/diff":
-            await self._send_diff(chat_id)
+            await self._send_diff(chat_id, command_argument)
         elif text.startswith("/"):
             await self._telegram.send_message(chat_id, "Неизвестная команда. Используй /help.")
         else:
@@ -272,11 +301,42 @@ class TelegramCodexBot:
     def _resolve_pending_text(
         self, pending: PendingTextInput, value: Any
     ) -> None:
-        current = self._pending_text_by_chat.get(pending.chat_id)
-        if current is pending:
+        pending_inputs = self._pending_text_by_chat.get(pending.chat_id, [])
+        if pending in pending_inputs:
+            pending_inputs.remove(pending)
+        if not pending_inputs:
             self._pending_text_by_chat.pop(pending.chat_id, None)
         if not pending.future.done():
             pending.future.set_result(value)
+
+    def _pending_text_input_for_message(
+        self, chat_id: int, message: dict[str, Any]
+    ) -> PendingTextInput | None:
+        pending_inputs = self._pending_text_by_chat.get(chat_id, [])
+        if not pending_inputs:
+            return None
+        reply = message.get("reply_to_message") or {}
+        reply_message_id = reply.get("message_id")
+        if reply_message_id is not None:
+            matched = next(
+                (
+                    pending
+                    for pending in pending_inputs
+                    if pending.message_id == int(reply_message_id)
+                ),
+                None,
+            )
+            if matched is not None:
+                return matched
+        selected = self._state.get_selected_task(chat_id)
+        if selected is not None:
+            matched = next(
+                (pending for pending in pending_inputs if pending.task_id == selected.id),
+                None,
+            )
+            if matched is not None:
+                return matched
+        return pending_inputs[0] if len(pending_inputs) == 1 else None
 
     async def _authorize(self, chat_id: int, user_id: int) -> bool:
         if user_id in self._config.allowed_user_ids:
@@ -295,34 +355,89 @@ class TelegramCodexBot:
         await self._telegram.send_message(
             chat_id,
             "Я передаю сообщения в Codex на текущем хосте.\n\n"
-            "/new — начать новый Codex-диалог\n"
-            "/status — показать текущий диалог и задачу\n"
-            "/cancel — остановить текущую задачу\n"
-            "/diff — показать последний diff\n"
+            "/new [название] — создать и выбрать новую задачу\n"
+            "/list — показать все задачи и их статусы\n"
+            "/switch <номер> — переключиться на задачу\n"
+            "/result <номер> — показать сохранённый результат\n"
+            "/status [номер] — показать подробный статус\n"
+            "/cancel [номер] — остановить задачу\n"
+            "/diff [номер] — показать последний diff задачи\n"
             "/help — эта справка\n\n"
-            "Обычное или голосовое сообщение становится промптом. Пока Codex "
-            "работает, следующее сообщение уточняет текущую задачу.",
+            "Обычное или голосовое сообщение отправляется в выбранную задачу. "
+            "Если она работает, сообщение уточняет текущий запуск. Иначе Codex "
+            "продолжает тот же диалог новым запуском.",
         )
 
-    async def _new_thread(self, chat_id: int) -> None:
-        if chat_id in self._active_by_chat:
+    async def _new_thread(
+        self, chat_id: int, user_id: int, title: str = ""
+    ) -> None:
+        task = self._state.create_task(chat_id, user_id, title or None)
+        await self._telegram.send_message(
+            chat_id,
+            f"Создана задача #{task.number}"
+            + (f" — {task.title}" if task.title else "")
+            + ". Она выбрана; отправь следующим сообщением промпт.",
+        )
+
+    async def _list_tasks(self, chat_id: int) -> None:
+        tasks = self._state.list_tasks(chat_id)
+        if not tasks:
             await self._telegram.send_message(
-                chat_id, "Сначала останови текущую задачу командой /cancel."
+                chat_id, "Задач пока нет. Создай первую командой /new."
             )
             return
-        self._state.clear_thread(chat_id)
-        self._last_diff_by_chat.pop(chat_id, None)
+        selected = self._state.get_selected_task(chat_id)
+        lines = ["Задачи:"]
+        for task in tasks:
+            marker = "→" if selected and task.id == selected.id else " "
+            icon = _task_status_icon(task.status)
+            title = task.title or "Без названия"
+            lines.append(f"{marker} {icon} #{task.number} — {title}")
+        lines.append("\nПереключиться: /switch <номер>")
+        await self._telegram.send_message(chat_id, "\n".join(lines))
+
+    async def _switch_task(self, chat_id: int, argument: str) -> None:
+        task = await self._task_from_argument(chat_id, argument, require_argument=True)
+        if task is None:
+            return
+        self._state.select_task(chat_id, task.number)
+        active = self._active_by_task.get(task.id)
+        state = "работает" if active else _task_status_label(task.status)
         await self._telegram.send_message(
-            chat_id, "Новый диалог будет создан со следующим сообщением."
+            chat_id,
+            f"Выбрана задача #{task.number} — {task.title or 'Без названия'}. "
+            f"Состояние: {state}.",
         )
 
-    async def _send_status(self, chat_id: int) -> None:
-        thread_id = self._state.get_thread_id(chat_id)
+    async def _send_result(self, chat_id: int, argument: str) -> None:
+        task = await self._task_from_argument(chat_id, argument, require_argument=True)
+        if task is None:
+            return
+        if task.result_text:
+            await self._telegram.send_message(
+                chat_id,
+                f"Результат задачи #{task.number}:\n\n{task.result_text}",
+                formatted=task.result_formatted,
+            )
+            return
+        if task.id in self._active_by_task or task.status == "running":
+            text = f"Задача #{task.number} ещё выполняется."
+        else:
+            text = f"У задачи #{task.number} пока нет сохранённого результата."
+        await self._telegram.send_message(chat_id, text)
+
+    async def _send_status(self, chat_id: int, argument: str = "") -> None:
+        task = await self._task_from_argument(chat_id, argument)
+        if task is None:
+            return
+        thread_id = task.thread_id
         if thread_id is None:
-            await self._telegram.send_message(chat_id, "Codex-диалог ещё не создан.")
+            await self._telegram.send_message(
+                chat_id, f"Задача #{task.number} создана, но промпт ещё не отправлен."
+            )
             return
 
-        active = self._active_by_chat.get(chat_id)
+        active = self._active_by_task.get(task.id)
         status = self._thread_statuses.get(thread_id, {})
         turns: list[dict[str, Any]] = []
         live_check = "получено"
@@ -370,11 +485,14 @@ class TelegramCodexBot:
         else:
             state = "ожидаю сообщение."
 
-        lines = [f"Диалог: {thread_id}"]
+        lines = [
+            f"Задача #{task.number}: {task.title or 'Без названия'}",
+            f"Диалог: {thread_id}",
+        ]
         if current_turn is not None:
-            lines.append(f"Задача: {current_turn.get('id')}")
+            lines.append(f"Запуск: {current_turn.get('id')}")
         elif active is not None:
-            lines.append(f"Задача: {active.turn_id}")
+            lines.append(f"Запуск: {active.turn_id}")
         lines.append(f"Состояние: {state}")
         if active is not None and turn_status in {"", "inProgress"}:
             lines.extend(
@@ -398,28 +516,76 @@ class TelegramCodexBot:
         text = "\n".join(lines)
         await self._telegram.send_message(chat_id, text)
 
-    async def _cancel_turn(self, chat_id: int) -> None:
-        active = self._active_by_chat.get(chat_id)
+    async def _cancel_turn(self, chat_id: int, argument: str = "") -> None:
+        task = await self._task_from_argument(chat_id, argument)
+        if task is None:
+            return
+        await self._cancel_task(task)
+
+    async def _cancel_task(self, task: TaskRecord) -> None:
+        active = self._active_by_task.get(task.id)
         if active is None:
-            await self._telegram.send_message(chat_id, "Активной задачи нет.")
+            await self._telegram.send_message(
+                task.chat_id, f"Задача #{task.number} сейчас не выполняется."
+            )
             return
         await self._app_server.request(
             "turn/interrupt",
             {"threadId": active.thread_id, "turnId": active.turn_id},
         )
-        await self._telegram.send_message(chat_id, "Останавливаю текущую задачу.")
+        await self._telegram.send_message(
+            task.chat_id, f"Останавливаю задачу #{task.number}."
+        )
 
-    async def _send_diff(self, chat_id: int) -> None:
-        diff = self._last_diff_by_chat.get(chat_id)
+    async def _send_diff(self, chat_id: int, argument: str = "") -> None:
+        task = await self._task_from_argument(chat_id, argument)
+        if task is None:
+            return
+        active = self._active_by_task.get(task.id)
+        diff = active.latest_diff if active and active.latest_diff else task.latest_diff
         if not diff:
-            await self._telegram.send_message(chat_id, "Для текущего диалога diff пока нет.")
+            await self._telegram.send_message(
+                chat_id, f"Для задачи #{task.number} diff пока нет."
+            )
             return
         await self._telegram.send_message(chat_id, diff)
+
+    async def _task_from_argument(
+        self, chat_id: int, argument: str, *, require_argument: bool = False
+    ) -> TaskRecord | None:
+        if argument:
+            try:
+                number = int(argument.removeprefix("#"))
+            except ValueError:
+                number = 0
+            task = self._state.get_task(chat_id, number) if number > 0 else None
+            if task is None:
+                await self._telegram.send_message(
+                    chat_id, "Укажи существующий номер задачи, например /switch 2."
+                )
+            return task
+        if require_argument:
+            await self._telegram.send_message(
+                chat_id, "Укажи номер задачи, например /result 2."
+            )
+            return None
+        task = self._state.get_selected_task(chat_id)
+        if task is None:
+            await self._telegram.send_message(
+                chat_id, "Задач пока нет. Создай первую командой /new."
+            )
+        return task
 
     async def _submit_prompt(
         self, chat_id: int, user_id: int, message_id: int, text: str
     ) -> None:
-        active = self._active_by_chat.get(chat_id)
+        task = self._state.get_selected_task(chat_id)
+        if task is None:
+            task = self._state.create_task(chat_id, user_id, _title_from_prompt(text))
+        elif not task.title:
+            self._state.set_task_title(task.id, _title_from_prompt(text))
+            task = self._state.get_task_by_id(task.id) or task
+        active = self._active_by_task.get(task.id)
         input_items = [{"type": "text", "text": text}]
         try:
             if active is not None:
@@ -436,7 +602,7 @@ class TelegramCodexBot:
                 await self._telegram.send_message(chat_id, "Уточнение передано в текущую задачу.")
                 return
 
-            thread_id, thread_name = await self._ensure_thread(chat_id, user_id)
+            thread_id, thread_name = await self._ensure_thread(task)
             await self._ensure_telegram_title(thread_id, thread_name, text)
             await self._telegram.send_typing(chat_id)
             params: dict[str, Any] = {
@@ -455,17 +621,22 @@ class TelegramCodexBot:
                 return
             active = self._active_by_turn.get(turn_id)
             if active is None:
-                active = ActiveTurn(chat_id=chat_id, thread_id=thread_id, turn_id=turn_id)
+                active = ActiveTurn(
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    task_id=task.id,
+                    task_number=task.number,
+                )
                 self._register_active(active)
+            self._state.set_task_running(task.id, turn_id)
             self._thread_statuses[thread_id] = {"type": "active", "activeFlags": []}
         except AppServerError as error:
             LOGGER.exception("Failed to submit a prompt")
             await self._telegram.send_message(chat_id, f"Codex не принял задачу: {error}")
 
-    async def _ensure_thread(
-        self, chat_id: int, user_id: int
-    ) -> tuple[str, str | None]:
-        stored_thread_id = self._state.get_thread_id(chat_id)
+    async def _ensure_thread(self, task: TaskRecord) -> tuple[str, str | None]:
+        stored_thread_id = task.thread_id
         if stored_thread_id is not None:
             try:
                 response = await self._app_server.request(
@@ -478,13 +649,12 @@ class TelegramCodexBot:
                 return str(thread["id"]), str(name) if name else None
             except AppServerError:
                 LOGGER.warning("Stored Codex thread cannot be resumed; creating a new one")
-                self._state.clear_thread(chat_id)
 
         response = await self._app_server.request("thread/start", self._start_thread_params())
         self._remember_thread_status(response)
         thread = response["thread"]
         thread_id = str(thread["id"])
-        self._state.set_thread_id(chat_id, user_id, thread_id)
+        self._state.attach_thread(task.id, thread_id)
         name = thread.get("name")
         return thread_id, str(name) if name else None
 
@@ -564,12 +734,12 @@ class TelegramCodexBot:
             if active is not None:
                 active.touch()
                 active.latest_diff = str(params["diff"])
-                self._last_diff_by_chat[active.chat_id] = active.latest_diff
+                self._state.set_task_diff(active.task_id, active.latest_diff)
         elif method == "thread/status/changed":
             thread_id = str(params["threadId"])
             self._thread_statuses[thread_id] = dict(params["status"])
-            chat_id = self._state.get_chat_id(thread_id)
-            if chat_id is not None and (active := self._active_by_chat.get(chat_id)):
+            task = self._state.get_task_by_thread_id(thread_id)
+            if task is not None and (active := self._active_by_task.get(task.id)):
                 active.touch()
         elif method == "turn/completed":
             await self._handle_turn_completed(params)
@@ -579,11 +749,18 @@ class TelegramCodexBot:
         if active := self._active_by_turn.get(turn_id):
             return active
         thread_id = str(params["threadId"])
-        chat_id = self._state.get_chat_id(thread_id)
-        if chat_id is None:
+        task = self._state.get_task_by_thread_id(thread_id)
+        if task is None:
             return None
-        active = ActiveTurn(chat_id=chat_id, thread_id=thread_id, turn_id=turn_id)
+        active = ActiveTurn(
+            chat_id=task.chat_id,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            task_id=task.id,
+            task_number=task.number,
+        )
         self._register_active(active)
+        self._state.set_task_running(task.id, turn_id)
         return active
 
     async def _handle_turn_completed(self, params: dict[str, Any]) -> None:
@@ -592,10 +769,16 @@ class TelegramCodexBot:
         active = self._active_by_turn.get(turn_id)
         if active is None:
             thread_id = str(params["threadId"])
-            chat_id = self._state.get_chat_id(thread_id)
-            if chat_id is None:
+            task = self._state.get_task_by_thread_id(thread_id)
+            if task is None:
                 return
-            active = ActiveTurn(chat_id=chat_id, thread_id=thread_id, turn_id=turn_id)
+            active = ActiveTurn(
+                chat_id=task.chat_id,
+                thread_id=thread_id,
+                turn_id=turn_id,
+                task_id=task.id,
+                task_number=task.number,
+            )
             self._completed_before_start_response.add(turn_id)
 
         status = str(turn["status"])
@@ -610,10 +793,27 @@ class TelegramCodexBot:
         elif not answer:
             answer = "Codex завершил задачу без текстового ответа."
 
-        if active.latest_diff:
-            self._last_diff_by_chat[active.chat_id] = active.latest_diff
+        persisted_status = {
+            "failed": "failed",
+            "interrupted": "interrupted",
+        }.get(status, "completed")
+        self._state.complete_task(
+            active.task_id,
+            persisted_status,
+            answer,
+            formatted=True,
+            latest_diff=active.latest_diff or None,
+        )
         self._unregister_active(active)
-        self._enqueue_outbox(active.chat_id, answer, formatted=True)
+        completion_label = {
+            "failed": "завершилась с ошибкой",
+            "interrupted": "прервана",
+        }.get(status, "завершена")
+        self._enqueue_outbox(
+            active.chat_id,
+            f"Задача #{active.task_number} {completion_label}.\n\n{answer}",
+            formatted=True,
+        )
 
     def _enqueue_outbox(self, chat_id: int, text: str, *, formatted: bool) -> int:
         message_id = self._state.enqueue_outbox(chat_id, text, formatted=formatted)
@@ -683,11 +883,19 @@ class TelegramCodexBot:
         )
 
     def _register_active(self, active: ActiveTurn) -> None:
+        if active.task_id == 0:
+            task = self._state.get_task_by_thread_id(active.thread_id)
+            if task is not None:
+                active.task_id = task.id
+                active.task_number = task.number
+        self._active_by_task[active.task_id] = active
         self._active_by_chat[active.chat_id] = active
         self._active_by_turn[active.turn_id] = active
 
     def _unregister_active(self, active: ActiveTurn) -> None:
-        self._active_by_chat.pop(active.chat_id, None)
+        self._active_by_task.pop(active.task_id, None)
+        if self._active_by_chat.get(active.chat_id) is active:
+            self._active_by_chat.pop(active.chat_id, None)
         self._active_by_turn.pop(active.turn_id, None)
 
     async def _handle_codex_request(self, method: str, params: dict[str, Any]) -> Any:
@@ -723,9 +931,10 @@ class TelegramCodexBot:
         self, method: str, params: dict[str, Any]
     ) -> dict[str, str]:
         thread_id = str(params["threadId"])
-        chat_id = self._state.get_chat_id(thread_id)
-        if chat_id is None:
+        task = self._state.get_task_by_thread_id(thread_id)
+        if task is None:
             return {"decision": "decline"}
+        chat_id = task.chat_id
 
         kind = "command" if "commandExecution" in method else "file"
         if kind == "command" and self._config.auto_approve_safe_read_only:
@@ -751,7 +960,7 @@ class TelegramCodexBot:
             "type": "active",
             "activeFlags": ["waitingOnApproval"],
         }
-        if active := self._active_by_chat.get(chat_id):
+        if active := self._active_by_task.get(task.id):
             active.touch()
 
         if kind == "command":
@@ -794,7 +1003,7 @@ class TelegramCodexBot:
         if decision is None:
             decision = "decline"
         self._thread_statuses[thread_id] = {"type": "active", "activeFlags": []}
-        if active := self._active_by_chat.get(chat_id):
+        if active := self._active_by_task.get(task.id):
             active.touch()
         return {"decision": decision}
 
@@ -802,10 +1011,11 @@ class TelegramCodexBot:
         self, params: dict[str, Any]
     ) -> dict[str, dict[str, dict[str, list[str]]]]:
         thread_id = str(params["threadId"])
-        chat_id = self._state.get_chat_id(thread_id)
+        task = self._state.get_task_by_thread_id(thread_id)
         questions = list(params.get("questions") or [])
-        if chat_id is None:
+        if task is None:
             return {"answers": {}}
+        chat_id = task.chat_id
 
         self._mark_waiting(thread_id, chat_id, "waitingOnUserInput")
         answers: dict[str, dict[str, list[str]]] = {}
@@ -860,6 +1070,7 @@ class TelegramCodexBot:
                             "Напиши свой вариант одним сообщением. /cancel отменит задачу.",
                             kind="user-input",
                             timeout=timeout,
+                            task_id=task.id,
                         )
                     elif selected is not None and selected.isdigit():
                         index = int(selected)
@@ -877,6 +1088,7 @@ class TelegramCodexBot:
                         "Ответь одним сообщением. /cancel отменит задачу.",
                         kind="user-input",
                         timeout=timeout,
+                        task_id=task.id,
                     )
                 answers[question_id] = {
                     "answers": [] if value is None else [str(value)]
@@ -887,9 +1099,10 @@ class TelegramCodexBot:
 
     async def _handle_mcp_elicitation(self, params: dict[str, Any]) -> dict[str, Any]:
         thread_id = str(params["threadId"])
-        chat_id = self._state.get_chat_id(thread_id)
-        if chat_id is None:
+        task = self._state.get_task_by_thread_id(thread_id)
+        if task is None:
             return {"action": "decline"}
+        chat_id = task.chat_id
 
         self._mark_waiting(thread_id, chat_id, "waitingOnUserInput")
         server_name = str(params.get("serverName") or "MCP")
@@ -934,7 +1147,7 @@ class TelegramCodexBot:
                 return {"action": "decline"}
 
             content = await self._collect_mcp_form(
-                chat_id, server_name, message, schema
+                chat_id, task.id, server_name, message, schema
             )
             if content is _MCP_FORM_CANCELLED:
                 return {"action": "cancel"}
@@ -945,6 +1158,7 @@ class TelegramCodexBot:
     async def _collect_mcp_form(
         self,
         chat_id: int,
+        task_id: int,
         server_name: str,
         message: str,
         schema: Any,
@@ -988,6 +1202,7 @@ class TelegramCodexBot:
         for name, details in properties.items():
             value = await self._ask_mcp_form_field(
                 chat_id,
+                task_id,
                 server_name,
                 name,
                 details,
@@ -1003,6 +1218,7 @@ class TelegramCodexBot:
     async def _ask_mcp_form_field(
         self,
         chat_id: int,
+        task_id: int,
         server_name: str,
         name: str,
         details: Any,
@@ -1108,6 +1324,7 @@ class TelegramCodexBot:
                 kind="mcp-form",
                 timeout=INTERACTION_TIMEOUT_SECONDS,
                 allow_skip=not required,
+                task_id=task_id,
             )
             if raw_value is None:
                 return _MCP_FORM_CANCELLED
@@ -1160,16 +1377,26 @@ class TelegramCodexBot:
         kind: str,
         timeout: float,
         allow_skip: bool = False,
+        task_id: int = 0,
     ) -> Any:
-        if chat_id in self._pending_text_by_chat:
-            LOGGER.warning("Cannot open two text input requests for chat %s", chat_id)
-            return None
         future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-        pending = PendingTextInput(chat_id, kind, future, allow_skip)
-        self._pending_text_by_chat[chat_id] = pending
+        pending = PendingTextInput(chat_id, kind, future, allow_skip, task_id)
+        pending_inputs = self._pending_text_by_chat.setdefault(chat_id, [])
+        if any(item.task_id == task_id for item in pending_inputs):
+            LOGGER.warning(
+                "Cannot open two text input requests for task %s in chat %s",
+                task_id,
+                chat_id,
+            )
+            return None
+        pending_inputs.append(pending)
         try:
             try:
-                await self._telegram.send_message(chat_id, prompt)
+                pending.message_id = await self._telegram.send_message(
+                    chat_id,
+                    prompt,
+                    reply_markup={"force_reply": True, "selective": True},
+                )
             except TelegramError as error:
                 LOGGER.warning("Could not deliver %s text request: %s", kind, error)
                 return None
@@ -1184,8 +1411,10 @@ class TelegramCodexBot:
                 )
                 return None
         finally:
-            current = self._pending_text_by_chat.get(chat_id)
-            if current is pending:
+            pending_inputs = self._pending_text_by_chat.get(chat_id, [])
+            if pending in pending_inputs:
+                pending_inputs.remove(pending)
+            if not pending_inputs:
                 self._pending_text_by_chat.pop(chat_id, None)
 
     def _mark_waiting(self, thread_id: str, chat_id: int, flag: str) -> None:
@@ -1193,12 +1422,14 @@ class TelegramCodexBot:
             "type": "active",
             "activeFlags": [flag],
         }
-        if active := self._active_by_chat.get(chat_id):
+        task = self._state.get_task_by_thread_id(thread_id)
+        if task is not None and (active := self._active_by_task.get(task.id)):
             active.touch()
 
     def _mark_active(self, thread_id: str, chat_id: int) -> None:
         self._thread_statuses[thread_id] = {"type": "active", "activeFlags": []}
-        if active := self._active_by_chat.get(chat_id):
+        task = self._state.get_task_by_thread_id(thread_id)
+        if task is not None and (active := self._active_by_task.get(task.id)):
             active.touch()
 
     async def _send_safely(self, chat_id: int, text: str) -> None:
@@ -1273,6 +1504,28 @@ def _title_from_prompt(prompt: str) -> str:
     if not normalized:
         return "Новый диалог"
     return normalized[:140]
+
+
+def _task_status_icon(status: str) -> str:
+    return {
+        "new": "⚪️",
+        "running": "🟡",
+        "completed": "🟢",
+        "failed": "🔴",
+        "interrupted": "⚫️",
+        "idle": "🔵",
+    }.get(status, "⚪️")
+
+
+def _task_status_label(status: str) -> str:
+    return {
+        "new": "ожидает первого сообщения",
+        "running": "работает",
+        "completed": "завершена",
+        "failed": "завершилась с ошибкой",
+        "interrupted": "прервана",
+        "idle": "ожидает сообщения",
+    }.get(status, status)
 
 
 def _request_timeout(_auto_resolution_ms: Any) -> float:

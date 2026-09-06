@@ -14,7 +14,7 @@ from codex_telegram_bot.bot import (
     TelegramCodexBot,
 )
 from codex_telegram_bot.config import Config
-from codex_telegram_bot.state import OutboxMessage
+from codex_telegram_bot.state import OutboxMessage, TaskRecord
 from codex_telegram_bot.telegram_api import TelegramError
 
 CHAT_ID = 101
@@ -93,12 +93,138 @@ class FakeState:
     def __init__(self) -> None:
         self.outbox: list[OutboxMessage] = []
         self.next_outbox_id = 1
+        self.next_task_id = 2
+        self.tasks = {
+            1: TaskRecord(
+                id=1,
+                chat_id=CHAT_ID,
+                user_id=USER_ID,
+                number=1,
+                thread_id=THREAD_ID,
+                title="Review",
+                status="idle",
+                current_turn_id=None,
+                result_text=None,
+                result_formatted=True,
+                latest_diff=None,
+                created_at="now",
+                updated_at="now",
+                completed_at=None,
+            )
+        }
+        self.selected = {CHAT_ID: 1}
+
+    def _replace(self, task_id: int, **changes: object) -> TaskRecord:
+        task = self.tasks[task_id]
+        values = {
+            field: getattr(task, field)
+            for field in TaskRecord.__dataclass_fields__
+        }
+        values.update(changes)
+        updated = TaskRecord(**values)
+        self.tasks[task_id] = updated
+        return updated
+
+    def create_task(
+        self, chat_id: int, user_id: int, title: str | None = None
+    ) -> TaskRecord:
+        number = max(
+            (task.number for task in self.tasks.values() if task.chat_id == chat_id),
+            default=0,
+        ) + 1
+        task = TaskRecord(
+            id=self.next_task_id,
+            chat_id=chat_id,
+            user_id=user_id,
+            number=number,
+            thread_id=None,
+            title=title,
+            status="new",
+            current_turn_id=None,
+            result_text=None,
+            result_formatted=True,
+            latest_diff=None,
+            created_at="now",
+            updated_at="now",
+            completed_at=None,
+        )
+        self.next_task_id += 1
+        self.tasks[task.id] = task
+        self.selected[chat_id] = task.id
+        return task
+
+    def list_tasks(self, chat_id: int) -> list[TaskRecord]:
+        return sorted(
+            (task for task in self.tasks.values() if task.chat_id == chat_id),
+            key=lambda task: task.number,
+        )
+
+    def get_task(self, chat_id: int, number: int) -> TaskRecord | None:
+        return next(
+            (
+                task
+                for task in self.tasks.values()
+                if task.chat_id == chat_id and task.number == number
+            ),
+            None,
+        )
+
+    def get_task_by_id(self, task_id: int) -> TaskRecord | None:
+        return self.tasks.get(task_id)
+
+    def get_task_by_thread_id(self, thread_id: str) -> TaskRecord | None:
+        return next(
+            (task for task in self.tasks.values() if task.thread_id == thread_id),
+            None,
+        )
+
+    def get_selected_task(self, chat_id: int) -> TaskRecord | None:
+        task_id = self.selected.get(chat_id)
+        return self.tasks.get(task_id) if task_id is not None else None
+
+    def select_task(self, chat_id: int, number: int) -> TaskRecord | None:
+        task = self.get_task(chat_id, number)
+        if task is not None:
+            self.selected[chat_id] = task.id
+        return task
+
+    def attach_thread(self, task_id: int, thread_id: str) -> None:
+        self._replace(task_id, thread_id=thread_id)
+
+    def set_task_title(self, task_id: int, title: str) -> None:
+        self._replace(task_id, title=title)
+
+    def set_task_running(self, task_id: int, turn_id: str) -> None:
+        self._replace(task_id, status="running", current_turn_id=turn_id)
+
+    def complete_task(
+        self,
+        task_id: int,
+        status: str,
+        result_text: str,
+        *,
+        formatted: bool,
+        latest_diff: str | None = None,
+    ) -> None:
+        self._replace(
+            task_id,
+            status=status,
+            current_turn_id=None,
+            result_text=result_text,
+            result_formatted=formatted,
+            latest_diff=latest_diff,
+        )
+
+    def set_task_diff(self, task_id: int, diff: str) -> None:
+        self._replace(task_id, latest_diff=diff)
 
     def get_chat_id(self, thread_id: str) -> int | None:
-        return CHAT_ID if thread_id == THREAD_ID else None
+        task = self.get_task_by_thread_id(thread_id)
+        return task.chat_id if task else None
 
     def get_thread_id(self, chat_id: int) -> str | None:
-        return THREAD_ID if chat_id == CHAT_ID else None
+        task = self.get_selected_task(chat_id)
+        return task.thread_id if task else None
 
     def enqueue_outbox(self, chat_id: int, text: str, *, formatted: bool) -> int:
         message_id = self.next_outbox_id
@@ -457,13 +583,22 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(telegram.sent, [])
         self.assertEqual(len(state.outbox), 1)
-        self.assertEqual(state.outbox[0].text, "**Готово.** Используй `result`.")
+        self.assertEqual(
+            state.outbox[0].text,
+            "Задача #1 завершена.\n\n**Готово.** Используй `result`.",
+        )
 
         self.assertTrue(await bot._deliver_outbox_message(state.outbox[0]))
 
         self.assertEqual(
             telegram.sent,
-            [(CHAT_ID, "**Готово.** Используй `result`.", None)],
+            [
+                (
+                    CHAT_ID,
+                    "Задача #1 завершена.\n\n**Готово.** Используй `result`.",
+                    None,
+                )
+            ],
         )
         self.assertEqual(telegram.formatted, [True])
         self.assertEqual(state.outbox, [])
@@ -835,6 +970,117 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(CHAT_ID, bot._active_by_chat)
         self.assertIn("последняя задача прервана", telegram.sent[-1][1])
         self.assertIn("Проверка живого статуса: получено", telegram.sent[-1][1])
+
+    async def test_new_list_switch_and_result_commands(self) -> None:
+        telegram = FakeTelegram()
+        state = FakeState()
+        bot = make_bot(telegram=telegram, state=state)
+
+        await bot._new_thread(CHAT_ID, USER_ID, "Второе ревью")
+        await bot._list_tasks(CHAT_ID)
+        await bot._switch_task(CHAT_ID, "1")
+        state.complete_task(1, "completed", "Замечаний нет.", formatted=True)
+        await bot._send_result(CHAT_ID, "1")
+
+        self.assertIn("Создана задача #2", telegram.sent[0][1])
+        self.assertIn("#1 — Review", telegram.sent[1][1])
+        self.assertIn("→ ⚪️ #2 — Второе ревью", telegram.sent[1][1])
+        self.assertIn("Выбрана задача #1", telegram.sent[2][1])
+        self.assertEqual(
+            telegram.sent[3][1], "Результат задачи #1:\n\nЗамечаний нет."
+        )
+        self.assertTrue(telegram.formatted[3])
+
+    async def test_two_tasks_can_have_concurrent_turns(self) -> None:
+        telegram = FakeTelegram()
+        state = FakeState()
+        app_server = FakeAppServer()
+        bot = make_bot(telegram=telegram, app_server=app_server, state=state)
+
+        second = state.create_task(CHAT_ID, USER_ID, "Второе ревью")
+        app_server.responses.update(
+            {
+                "thread/start": {
+                    "thread": {
+                        "id": "thread-2",
+                        "name": "[Telegram] Второе ревью",
+                        "status": {"type": "idle"},
+                    }
+                },
+                "turn/start": {"turn": {"id": "turn-2"}},
+            }
+        )
+        await bot._submit_prompt(CHAT_ID, USER_ID, 501, "Проверь второй PR")
+
+        state.select_task(CHAT_ID, 1)
+        app_server.responses.update(
+            {
+                "thread/resume": {
+                    "thread": {
+                        "id": THREAD_ID,
+                        "name": "[Telegram] Review",
+                        "status": {"type": "idle"},
+                    }
+                },
+                "turn/start": {"turn": {"id": TURN_ID}},
+            }
+        )
+        await bot._submit_prompt(CHAT_ID, USER_ID, 502, "Проверь первый PR")
+
+        self.assertEqual(set(bot._active_by_task), {1, second.id})
+        self.assertEqual(bot._active_by_task[1].turn_id, TURN_ID)
+        self.assertEqual(bot._active_by_task[second.id].turn_id, "turn-2")
+
+    async def test_text_replies_are_routed_to_the_matching_parallel_task(self) -> None:
+        telegram = FakeTelegram()
+        state = FakeState()
+        second = state.create_task(CHAT_ID, USER_ID, "Вторая")
+        bot = make_bot(telegram=telegram, state=state)
+
+        first_waiter = asyncio.create_task(
+            bot._ask_for_text(
+                CHAT_ID, "Вопрос первой задачи", kind="user-input", timeout=10, task_id=1
+            )
+        )
+        second_waiter = asyncio.create_task(
+            bot._ask_for_text(
+                CHAT_ID,
+                "Вопрос второй задачи",
+                kind="user-input",
+                timeout=10,
+                task_id=second.id,
+            )
+        )
+        await asyncio.sleep(0)
+
+        await bot._handle_update(
+            {
+                "message": {
+                    "chat": {"id": CHAT_ID, "type": "private"},
+                    "from": {"id": USER_ID},
+                    "message_id": 602,
+                    "reply_to_message": {"message_id": 2},
+                    "text": "Ответ второй",
+                }
+            }
+        )
+        await bot._handle_update(
+            {
+                "message": {
+                    "chat": {"id": CHAT_ID, "type": "private"},
+                    "from": {"id": USER_ID},
+                    "message_id": 601,
+                    "reply_to_message": {"message_id": 1},
+                    "text": "Ответ первой",
+                }
+            }
+        )
+
+        self.assertEqual(await first_waiter, "Ответ первой")
+        self.assertEqual(await second_waiter, "Ответ второй")
+        self.assertEqual(
+            telegram.sent[0][2], {"force_reply": True, "selective": True}
+        )
 
 
 if __name__ == "__main__":

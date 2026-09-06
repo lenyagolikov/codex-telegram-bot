@@ -14,6 +14,24 @@ class OutboxMessage:
     attempts: int
 
 
+@dataclass(frozen=True, slots=True)
+class TaskRecord:
+    id: int
+    chat_id: int
+    user_id: int
+    number: int
+    thread_id: str | None
+    title: str | None
+    status: str
+    current_turn_id: str | None
+    result_text: str | None
+    result_formatted: bool
+    latest_diff: str | None
+    created_at: str
+    updated_at: str
+    completed_at: str | None
+
+
 class StateStore:
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -50,39 +68,250 @@ class StateStore:
             )
             """
         )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                task_number INTEGER NOT NULL,
+                thread_id TEXT UNIQUE,
+                title TEXT,
+                status TEXT NOT NULL DEFAULT 'new',
+                current_turn_id TEXT,
+                result_text TEXT,
+                result_formatted INTEGER NOT NULL DEFAULT 1,
+                latest_diff TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at TEXT,
+                UNIQUE(chat_id, task_number)
+            )
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_selections (
+                chat_id INTEGER PRIMARY KEY,
+                task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE
+            )
+            """
+        )
+        self._migrate_legacy_chats()
         self._connection.commit()
+
+    def _migrate_legacy_chats(self) -> None:
+        rows = self._connection.execute(
+            "SELECT chat_id, user_id, thread_id FROM chats"
+        ).fetchall()
+        for chat_id, user_id, thread_id in rows:
+            existing = self._connection.execute(
+                "SELECT id FROM tasks WHERE thread_id = ?", (thread_id,)
+            ).fetchone()
+            if existing is None:
+                cursor = self._connection.execute(
+                    """
+                    INSERT INTO tasks (
+                        chat_id, user_id, task_number, thread_id, title, status
+                    )
+                    VALUES (?, ?, 1, ?, 'Существующий диалог', 'idle')
+                    """,
+                    (chat_id, user_id, thread_id),
+                )
+                task_id = int(cursor.lastrowid)
+            else:
+                task_id = int(existing[0])
+            self._connection.execute(
+                """
+                INSERT INTO task_selections (chat_id, task_id) VALUES (?, ?)
+                ON CONFLICT(chat_id) DO NOTHING
+                """,
+                (chat_id, task_id),
+            )
 
     def close(self) -> None:
         self._connection.close()
 
-    def get_thread_id(self, chat_id: int) -> str | None:
+    def create_task(
+        self, chat_id: int, user_id: int, title: str | None = None
+    ) -> TaskRecord:
         row = self._connection.execute(
-            "SELECT thread_id FROM chats WHERE chat_id = ?", (chat_id,)
+            "SELECT COALESCE(MAX(task_number), 0) + 1 FROM tasks WHERE chat_id = ?",
+            (chat_id,),
         ).fetchone()
-        return str(row[0]) if row else None
-
-    def get_chat_id(self, thread_id: str) -> int | None:
-        row = self._connection.execute(
-            "SELECT chat_id FROM chats WHERE thread_id = ?", (thread_id,)
-        ).fetchone()
-        return int(row[0]) if row else None
-
-    def set_thread_id(self, chat_id: int, user_id: int, thread_id: str) -> None:
+        number = int(row[0])
+        cursor = self._connection.execute(
+            """
+            INSERT INTO tasks (chat_id, user_id, task_number, title)
+            VALUES (?, ?, ?, ?)
+            """,
+            (chat_id, user_id, number, title),
+        )
+        task_id = int(cursor.lastrowid)
         self._connection.execute(
             """
-            INSERT INTO chats (chat_id, user_id, thread_id)
-            VALUES (?, ?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET
-                user_id = excluded.user_id,
-                thread_id = excluded.thread_id,
-                updated_at = CURRENT_TIMESTAMP
+            INSERT INTO task_selections (chat_id, task_id) VALUES (?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET task_id = excluded.task_id
             """,
-            (chat_id, user_id, thread_id),
+            (chat_id, task_id),
+        )
+        self._connection.commit()
+        task = self.get_task_by_id(task_id)
+        assert task is not None
+        return task
+
+    def list_tasks(self, chat_id: int) -> list[TaskRecord]:
+        rows = self._connection.execute(
+            "SELECT * FROM tasks WHERE chat_id = ? ORDER BY task_number", (chat_id,)
+        ).fetchall()
+        return [self._task_from_row(row) for row in rows]
+
+    def get_task(self, chat_id: int, number: int) -> TaskRecord | None:
+        row = self._connection.execute(
+            "SELECT * FROM tasks WHERE chat_id = ? AND task_number = ?",
+            (chat_id, number),
+        ).fetchone()
+        return self._task_from_row(row) if row else None
+
+    def get_task_by_id(self, task_id: int) -> TaskRecord | None:
+        row = self._connection.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        return self._task_from_row(row) if row else None
+
+    def get_task_by_thread_id(self, thread_id: str) -> TaskRecord | None:
+        row = self._connection.execute(
+            "SELECT * FROM tasks WHERE thread_id = ?", (thread_id,)
+        ).fetchone()
+        return self._task_from_row(row) if row else None
+
+    def get_selected_task(self, chat_id: int) -> TaskRecord | None:
+        row = self._connection.execute(
+            """
+            SELECT tasks.*
+            FROM task_selections
+            JOIN tasks ON tasks.id = task_selections.task_id
+            WHERE task_selections.chat_id = ?
+            """,
+            (chat_id,),
+        ).fetchone()
+        return self._task_from_row(row) if row else None
+
+    def select_task(self, chat_id: int, number: int) -> TaskRecord | None:
+        task = self.get_task(chat_id, number)
+        if task is None:
+            return None
+        self._connection.execute(
+            """
+            INSERT INTO task_selections (chat_id, task_id) VALUES (?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET task_id = excluded.task_id
+            """,
+            (chat_id, task.id),
+        )
+        self._connection.commit()
+        return task
+
+    def attach_thread(self, task_id: int, thread_id: str) -> None:
+        self._connection.execute(
+            """
+            UPDATE tasks SET thread_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+            """,
+            (thread_id, task_id),
         )
         self._connection.commit()
 
+    def set_task_title(self, task_id: int, title: str) -> None:
+        self._connection.execute(
+            "UPDATE tasks SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (title, task_id),
+        )
+        self._connection.commit()
+
+    def set_task_running(self, task_id: int, turn_id: str) -> None:
+        self._connection.execute(
+            """
+            UPDATE tasks
+            SET status = 'running', current_turn_id = ?, result_text = NULL,
+                completed_at = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (turn_id, task_id),
+        )
+        self._connection.commit()
+
+    def complete_task(
+        self,
+        task_id: int,
+        status: str,
+        result_text: str,
+        *,
+        formatted: bool,
+        latest_diff: str | None = None,
+    ) -> None:
+        self._connection.execute(
+            """
+            UPDATE tasks
+            SET status = ?, current_turn_id = NULL, result_text = ?,
+                result_formatted = ?, latest_diff = COALESCE(?, latest_diff),
+                completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (status, result_text, int(formatted), latest_diff, task_id),
+        )
+        self._connection.commit()
+
+    def set_task_diff(self, task_id: int, diff: str) -> None:
+        self._connection.execute(
+            "UPDATE tasks SET latest_diff = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (diff, task_id),
+        )
+        self._connection.commit()
+
+    @staticmethod
+    def _task_from_row(row: sqlite3.Row | tuple[object, ...]) -> TaskRecord:
+        return TaskRecord(
+            id=int(row[0]),
+            chat_id=int(row[1]),
+            user_id=int(row[2]),
+            number=int(row[3]),
+            thread_id=str(row[4]) if row[4] is not None else None,
+            title=str(row[5]) if row[5] is not None else None,
+            status=str(row[6]),
+            current_turn_id=str(row[7]) if row[7] is not None else None,
+            result_text=str(row[8]) if row[8] is not None else None,
+            result_formatted=bool(row[9]),
+            latest_diff=str(row[10]) if row[10] is not None else None,
+            created_at=str(row[11]),
+            updated_at=str(row[12]),
+            completed_at=str(row[13]) if row[13] is not None else None,
+        )
+
+    def get_thread_id(self, chat_id: int) -> str | None:
+        task = self.get_selected_task(chat_id)
+        return task.thread_id if task else None
+
+    def get_chat_id(self, thread_id: str) -> int | None:
+        task = self.get_task_by_thread_id(thread_id)
+        return task.chat_id if task else None
+
+    def set_thread_id(self, chat_id: int, user_id: int, thread_id: str) -> None:
+        task = self.get_selected_task(chat_id) or self.create_task(chat_id, user_id)
+        self.attach_thread(task.id, thread_id)
+
     def clear_thread(self, chat_id: int) -> None:
-        self._connection.execute("DELETE FROM chats WHERE chat_id = ?", (chat_id,))
+        task = self.get_selected_task(chat_id)
+        if task is None:
+            return
+        self._connection.execute(
+            """
+            UPDATE tasks
+            SET thread_id = NULL, status = 'new', current_turn_id = NULL,
+                result_text = NULL, latest_diff = NULL, completed_at = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (task.id,),
+        )
         self._connection.commit()
 
     def get_update_offset(self) -> int | None:
