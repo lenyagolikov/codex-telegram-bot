@@ -201,6 +201,8 @@ class TelegramCodexBot:
                 "/list",
                 "/switch",
                 "/result",
+                "/archive",
+                "/unarchive",
                 "/status",
                 "/cancel",
                 "/diff",
@@ -216,11 +218,15 @@ class TelegramCodexBot:
         elif command == "/new":
             await self._new_thread(chat_id, user_id, command_argument)
         elif command == "/list":
-            await self._list_tasks(chat_id)
+            await self._list_tasks(chat_id, command_argument)
         elif command == "/switch":
             await self._switch_task(chat_id, command_argument)
         elif command == "/result":
             await self._send_result(chat_id, command_argument)
+        elif command == "/archive":
+            await self._archive_task(chat_id, command_argument)
+        elif command == "/unarchive":
+            await self._unarchive_task(chat_id, command_argument)
         elif command == "/status":
             await self._send_status(chat_id, command_argument)
         elif command == "/cancel":
@@ -359,6 +365,9 @@ class TelegramCodexBot:
             "/list — показать все задачи и их статусы\n"
             "/switch <номер> — переключиться на задачу\n"
             "/result <номер> — показать сохранённый результат\n"
+            "/archive <номер> — скрыть завершённую задачу из списка\n"
+            "/unarchive <номер> — восстановить задачу из архива\n"
+            "/list archived — показать архив\n"
             "/status [номер] — показать подробный статус\n"
             "/cancel [номер] — остановить задачу\n"
             "/diff [номер] — показать последний diff задачи\n"
@@ -379,21 +388,36 @@ class TelegramCodexBot:
             + ". Она выбрана; отправь следующим сообщением промпт.",
         )
 
-    async def _list_tasks(self, chat_id: int) -> None:
-        tasks = self._state.list_tasks(chat_id)
-        if not tasks:
+    async def _list_tasks(self, chat_id: int, argument: str = "") -> None:
+        normalized = argument.casefold()
+        if normalized not in {"", "all", "archived"}:
             await self._telegram.send_message(
-                chat_id, "Задач пока нет. Создай первую командой /new."
+                chat_id, "Используй /list, /list archived или /list all."
+            )
+            return
+        archived = True if normalized == "archived" else None if normalized == "all" else False
+        tasks = self._state.list_tasks(chat_id, archived=archived)
+        if not tasks:
+            message = (
+                "Архив пуст."
+                if normalized == "archived"
+                else "Задач пока нет. Создай первую командой /new."
+            )
+            await self._telegram.send_message(
+                chat_id, message
             )
             return
         selected = self._state.get_selected_task(chat_id)
-        lines = ["Задачи:"]
+        lines = ["Архив:" if normalized == "archived" else "Задачи:"]
         for task in tasks:
             marker = "→" if selected and task.id == selected.id else " "
-            icon = _task_status_icon(task.status)
+            icon = "📦" if task.archived_at else _task_status_icon(task.status)
             title = task.title or "Без названия"
             lines.append(f"{marker} {icon} #{task.number} — {title}")
-        lines.append("\nПереключиться: /switch <номер>")
+        if normalized == "archived":
+            lines.append("\nВосстановить: /unarchive <номер>")
+        else:
+            lines.append("\nПереключиться: /switch <номер>")
         await self._telegram.send_message(chat_id, "\n".join(lines))
 
     async def _switch_task(self, chat_id: int, argument: str) -> None:
@@ -410,7 +434,9 @@ class TelegramCodexBot:
         )
 
     async def _send_result(self, chat_id: int, argument: str) -> None:
-        task = await self._task_from_argument(chat_id, argument, require_argument=True)
+        task = await self._task_from_argument(
+            chat_id, argument, require_argument=True, allow_archived=True
+        )
         if task is None:
             return
         if task.result_text:
@@ -420,11 +446,58 @@ class TelegramCodexBot:
                 formatted=task.result_formatted,
             )
             return
-        if task.id in self._active_by_task or task.status == "running":
+        if task.id in self._active_by_task:
             text = f"Задача #{task.number} ещё выполняется."
         else:
             text = f"У задачи #{task.number} пока нет сохранённого результата."
         await self._telegram.send_message(chat_id, text)
+
+    async def _archive_task(self, chat_id: int, argument: str) -> None:
+        task = await self._task_from_argument(
+            chat_id, argument, require_argument=True, allow_archived=True
+        )
+        if task is None:
+            return
+        if task.archived_at is not None:
+            await self._telegram.send_message(
+                chat_id, f"Задача #{task.number} уже находится в архиве."
+            )
+            return
+        if task.id in self._active_by_task:
+            await self._telegram.send_message(
+                chat_id,
+                f"Задача #{task.number} ещё выполняется. Сначала останови её: "
+                f"/cancel {task.number}",
+            )
+            return
+        self._state.archive_task(chat_id, task.number)
+        selected = self._state.get_selected_task(chat_id)
+        suffix = (
+            f" Теперь выбрана задача #{selected.number}."
+            if selected is not None
+            else " Активных задач не осталось."
+        )
+        await self._telegram.send_message(
+            chat_id, f"Задача #{task.number} перемещена в архив.{suffix}"
+        )
+
+    async def _unarchive_task(self, chat_id: int, argument: str) -> None:
+        task = await self._task_from_argument(
+            chat_id, argument, require_argument=True, allow_archived=True
+        )
+        if task is None:
+            return
+        if task.archived_at is None:
+            await self._telegram.send_message(
+                chat_id, f"Задача #{task.number} не находится в архиве."
+            )
+            return
+        self._state.unarchive_task(chat_id, task.number)
+        await self._telegram.send_message(
+            chat_id,
+            f"Задача #{task.number} восстановлена. Чтобы выбрать её: "
+            f"/switch {task.number}",
+        )
 
     async def _send_status(self, chat_id: int, argument: str = "") -> None:
         task = await self._task_from_argument(chat_id, argument)
@@ -551,7 +624,12 @@ class TelegramCodexBot:
         await self._telegram.send_message(chat_id, diff)
 
     async def _task_from_argument(
-        self, chat_id: int, argument: str, *, require_argument: bool = False
+        self,
+        chat_id: int,
+        argument: str,
+        *,
+        require_argument: bool = False,
+        allow_archived: bool = False,
     ) -> TaskRecord | None:
         if argument:
             try:
@@ -563,6 +641,13 @@ class TelegramCodexBot:
                 await self._telegram.send_message(
                     chat_id, "Укажи существующий номер задачи, например /switch 2."
                 )
+            elif task.archived_at is not None and not allow_archived:
+                await self._telegram.send_message(
+                    chat_id,
+                    f"Задача #{task.number} находится в архиве. Сначала восстанови её: "
+                    f"/unarchive {task.number}",
+                )
+                return None
             return task
         if require_argument:
             await self._telegram.send_message(

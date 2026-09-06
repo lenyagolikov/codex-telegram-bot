@@ -79,6 +79,70 @@ class StateStoreTaskTests(unittest.TestCase):
         self.assertEqual(tasks[0].result_text, "Готово")
         self.assertEqual(tasks[0].latest_diff, "diff --git")
 
+    def test_archiving_hides_task_and_selects_another_one(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = StateStore(Path(directory) / "state.sqlite3")
+            first = state.create_task(101, 202, "Первая")
+            second = state.create_task(101, 202, "Вторая")
+
+            archived = state.archive_task(101, second.number)
+
+            self.assertIsNotNone(archived)
+            assert archived is not None
+            self.assertIsNotNone(archived.archived_at)
+            self.assertEqual(state.list_tasks(101), [first])
+            self.assertEqual(state.list_tasks(101, archived=True), [archived])
+            self.assertEqual(state.get_selected_task(101), first)
+
+            restored = state.unarchive_task(101, second.number)
+            self.assertIsNotNone(restored)
+            assert restored is not None
+            self.assertIsNone(restored.archived_at)
+            self.assertEqual(len(state.list_tasks(101)), 2)
+            state.close()
+
+    def test_existing_tasks_schema_gets_archived_column(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.execute(
+                """
+                CREATE TABLE tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    task_number INTEGER NOT NULL,
+                    thread_id TEXT UNIQUE,
+                    title TEXT,
+                    status TEXT NOT NULL DEFAULT 'new',
+                    current_turn_id TEXT,
+                    result_text TEXT,
+                    result_formatted INTEGER NOT NULL DEFAULT 1,
+                    latest_diff TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    completed_at TEXT,
+                    UNIQUE(chat_id, task_number)
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO tasks (chat_id, user_id, task_number, title)
+                VALUES (101, 202, 1, 'Старая задача')
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            state = StateStore(path)
+            task = state.get_task(101, 1)
+            state.close()
+
+        self.assertIsNotNone(task)
+        assert task is not None
+        self.assertIsNone(task.archived_at)
+
     def test_legacy_chat_is_migrated_to_first_task(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"

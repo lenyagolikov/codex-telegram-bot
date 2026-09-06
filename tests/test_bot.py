@@ -110,6 +110,7 @@ class FakeState:
                 created_at="now",
                 updated_at="now",
                 completed_at=None,
+                archived_at=None,
             )
         }
         self.selected = {CHAT_ID: 1}
@@ -147,15 +148,26 @@ class FakeState:
             created_at="now",
             updated_at="now",
             completed_at=None,
+            archived_at=None,
         )
         self.next_task_id += 1
         self.tasks[task.id] = task
         self.selected[chat_id] = task.id
         return task
 
-    def list_tasks(self, chat_id: int) -> list[TaskRecord]:
+    def list_tasks(
+        self, chat_id: int, *, archived: bool | None = False
+    ) -> list[TaskRecord]:
         return sorted(
-            (task for task in self.tasks.values() if task.chat_id == chat_id),
+            (
+                task
+                for task in self.tasks.values()
+                if task.chat_id == chat_id
+                and (
+                    archived is None
+                    or (task.archived_at is not None) == archived
+                )
+            ),
             key=lambda task: task.number,
         )
 
@@ -180,13 +192,32 @@ class FakeState:
 
     def get_selected_task(self, chat_id: int) -> TaskRecord | None:
         task_id = self.selected.get(chat_id)
-        return self.tasks.get(task_id) if task_id is not None else None
+        task = self.tasks.get(task_id) if task_id is not None else None
+        return task if task is not None and task.archived_at is None else None
 
     def select_task(self, chat_id: int, number: int) -> TaskRecord | None:
         task = self.get_task(chat_id, number)
-        if task is not None:
+        if task is not None and task.archived_at is None:
             self.selected[chat_id] = task.id
-        return task
+            return task
+        return None
+
+    def archive_task(self, chat_id: int, number: int) -> TaskRecord | None:
+        task = self.get_task(chat_id, number)
+        if task is None:
+            return None
+        archived = self._replace(task.id, archived_at="now")
+        if self.selected.get(chat_id) == task.id:
+            candidates = self.list_tasks(chat_id)
+            if candidates:
+                self.selected[chat_id] = candidates[-1].id
+            else:
+                self.selected.pop(chat_id, None)
+        return archived
+
+    def unarchive_task(self, chat_id: int, number: int) -> TaskRecord | None:
+        task = self.get_task(chat_id, number)
+        return self._replace(task.id, archived_at=None) if task is not None else None
 
     def attach_thread(self, task_id: int, thread_id: str) -> None:
         self._replace(task_id, thread_id=thread_id)
@@ -1081,6 +1112,34 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             telegram.sent[0][2], {"force_reply": True, "selective": True}
         )
+
+    async def test_archive_hides_task_and_unarchive_restores_it(self) -> None:
+        telegram = FakeTelegram()
+        state = FakeState()
+        second = state.create_task(CHAT_ID, USER_ID, "Готовое ревью")
+        state.complete_task(second.id, "completed", "Готово", formatted=True)
+        bot = make_bot(telegram=telegram, state=state)
+
+        await bot._archive_task(CHAT_ID, str(second.number))
+        await bot._list_tasks(CHAT_ID)
+        await bot._list_tasks(CHAT_ID, "archived")
+        await bot._unarchive_task(CHAT_ID, str(second.number))
+
+        self.assertIn("перемещена в архив", telegram.sent[0][1])
+        self.assertNotIn("Готовое ревью", telegram.sent[1][1])
+        self.assertIn("📦 #2 — Готовое ревью", telegram.sent[2][1])
+        self.assertIn("восстановлена", telegram.sent[3][1])
+
+    async def test_running_task_cannot_be_archived(self) -> None:
+        telegram = FakeTelegram()
+        state = FakeState()
+        bot = make_bot(telegram=telegram, state=state)
+        bot._register_active(ActiveTurn(CHAT_ID, THREAD_ID, TURN_ID))
+
+        await bot._archive_task(CHAT_ID, "1")
+
+        self.assertIsNone(state.get_task(CHAT_ID, 1).archived_at)
+        self.assertIn("ещё выполняется", telegram.sent[-1][1])
 
 
 if __name__ == "__main__":

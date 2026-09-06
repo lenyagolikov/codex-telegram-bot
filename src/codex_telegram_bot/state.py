@@ -30,6 +30,7 @@ class TaskRecord:
     created_at: str
     updated_at: str
     completed_at: str | None
+    archived_at: str | None
 
 
 class StateStore:
@@ -85,10 +86,12 @@ class StateStore:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 completed_at TEXT,
+                archived_at TEXT,
                 UNIQUE(chat_id, task_number)
             )
             """
         )
+        self._ensure_task_columns()
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS task_selections (
@@ -99,6 +102,14 @@ class StateStore:
         )
         self._migrate_legacy_chats()
         self._connection.commit()
+
+    def _ensure_task_columns(self) -> None:
+        columns = {
+            str(row[1])
+            for row in self._connection.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        if "archived_at" not in columns:
+            self._connection.execute("ALTER TABLE tasks ADD COLUMN archived_at TEXT")
 
     def _migrate_legacy_chats(self) -> None:
         rows = self._connection.execute(
@@ -160,9 +171,17 @@ class StateStore:
         assert task is not None
         return task
 
-    def list_tasks(self, chat_id: int) -> list[TaskRecord]:
+    def list_tasks(
+        self, chat_id: int, *, archived: bool | None = False
+    ) -> list[TaskRecord]:
+        archive_filter = ""
+        if archived is True:
+            archive_filter = " AND archived_at IS NOT NULL"
+        elif archived is False:
+            archive_filter = " AND archived_at IS NULL"
         rows = self._connection.execute(
-            "SELECT * FROM tasks WHERE chat_id = ? ORDER BY task_number", (chat_id,)
+            f"SELECT * FROM tasks WHERE chat_id = ?{archive_filter} ORDER BY task_number",
+            (chat_id,),
         ).fetchall()
         return [self._task_from_row(row) for row in rows]
 
@@ -191,7 +210,7 @@ class StateStore:
             SELECT tasks.*
             FROM task_selections
             JOIN tasks ON tasks.id = task_selections.task_id
-            WHERE task_selections.chat_id = ?
+            WHERE task_selections.chat_id = ? AND tasks.archived_at IS NULL
             """,
             (chat_id,),
         ).fetchone()
@@ -199,7 +218,7 @@ class StateStore:
 
     def select_task(self, chat_id: int, number: int) -> TaskRecord | None:
         task = self.get_task(chat_id, number)
-        if task is None:
+        if task is None or task.archived_at is not None:
             return None
         self._connection.execute(
             """
@@ -210,6 +229,58 @@ class StateStore:
         )
         self._connection.commit()
         return task
+
+    def archive_task(self, chat_id: int, number: int) -> TaskRecord | None:
+        task = self.get_task(chat_id, number)
+        if task is None:
+            return None
+        self._connection.execute(
+            """
+            UPDATE tasks
+            SET archived_at = COALESCE(archived_at, CURRENT_TIMESTAMP),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (task.id,),
+        )
+        selected = self._connection.execute(
+            "SELECT task_id FROM task_selections WHERE chat_id = ?", (chat_id,)
+        ).fetchone()
+        if selected is not None and int(selected[0]) == task.id:
+            replacement = self._connection.execute(
+                """
+                SELECT id FROM tasks
+                WHERE chat_id = ? AND archived_at IS NULL
+                ORDER BY task_number DESC LIMIT 1
+                """,
+                (chat_id,),
+            ).fetchone()
+            if replacement is None:
+                self._connection.execute(
+                    "DELETE FROM task_selections WHERE chat_id = ?", (chat_id,)
+                )
+            else:
+                self._connection.execute(
+                    "UPDATE task_selections SET task_id = ? WHERE chat_id = ?",
+                    (int(replacement[0]), chat_id),
+                )
+        self._connection.commit()
+        return self.get_task_by_id(task.id)
+
+    def unarchive_task(self, chat_id: int, number: int) -> TaskRecord | None:
+        task = self.get_task(chat_id, number)
+        if task is None:
+            return None
+        self._connection.execute(
+            """
+            UPDATE tasks
+            SET archived_at = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (task.id,),
+        )
+        self._connection.commit()
+        return self.get_task_by_id(task.id)
 
     def attach_thread(self, task_id: int, thread_id: str) -> None:
         self._connection.execute(
@@ -284,6 +355,7 @@ class StateStore:
             created_at=str(row[11]),
             updated_at=str(row[12]),
             completed_at=str(row[13]) if row[13] is not None else None,
+            archived_at=str(row[14]) if row[14] is not None else None,
         )
 
     def get_thread_id(self, chat_id: int) -> str | None:
