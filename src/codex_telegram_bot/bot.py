@@ -22,6 +22,8 @@ LOGGER = logging.getLogger(__name__)
 TELEGRAM_TITLE_PREFIX = "[Telegram]"
 OUTBOX_RETRY_SECONDS = 10
 INTERACTION_TIMEOUT_SECONDS = 24 * 60 * 60
+STALLED_TASK_REMINDER_SECONDS = 30 * 60
+STALLED_TASK_CHECK_SECONDS = 60
 _MCP_FORM_CANCELLED = object()
 _MCP_FORM_SKIPPED = object()
 TELEGRAM_CLIENT_INSTRUCTIONS = """\
@@ -45,9 +47,11 @@ class ActiveTurn:
     started_at: float = field(default_factory=time.monotonic)
     last_activity_at: float = field(default_factory=time.monotonic)
     progress_item_ids: set[str] = field(default_factory=set)
+    reminded_for_activity_at: float | None = None
 
     def touch(self) -> None:
         self.last_activity_at = time.monotonic()
+        self.reminded_for_activity_at = None
 
 
 @dataclass(slots=True)
@@ -105,7 +109,10 @@ class TelegramCodexBot:
         outbox_task = asyncio.create_task(
             self._deliver_outbox(), name="telegram-outbox"
         )
-        tasks = {polling_task, health_task, outbox_task}
+        reminder_task = asyncio.create_task(
+            self._send_stalled_task_reminders(), name="task-reminders"
+        )
+        tasks = {polling_task, health_task, outbox_task, reminder_task}
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -201,6 +208,7 @@ class TelegramCodexBot:
                 "/list",
                 "/switch",
                 "/result",
+                "/rename",
                 "/archive",
                 "/unarchive",
                 "/status",
@@ -223,6 +231,8 @@ class TelegramCodexBot:
             await self._switch_task(chat_id, command_argument)
         elif command == "/result":
             await self._send_result(chat_id, command_argument)
+        elif command == "/rename":
+            await self._rename_task(chat_id, command_argument)
         elif command == "/archive":
             await self._archive_task(chat_id, command_argument)
         elif command == "/unarchive":
@@ -365,9 +375,11 @@ class TelegramCodexBot:
             "/list — показать все задачи и их статусы\n"
             "/switch <номер> — переключиться на задачу\n"
             "/result <номер> — показать сохранённый результат\n"
+            "/rename <номер> <название> — переименовать задачу\n"
             "/archive <номер> — скрыть завершённую задачу из списка\n"
             "/unarchive <номер> — восстановить задачу из архива\n"
-            "/list archived — показать архив\n"
+            "/list <фильтр> — running, waiting, completed, failed, interrupted, "
+            "archived или all\n"
             "/status [номер] — показать подробный статус\n"
             "/cancel [номер] — остановить задачу\n"
             "/diff [номер] — показать последний diff задачи\n"
@@ -389,29 +401,63 @@ class TelegramCodexBot:
         )
 
     async def _list_tasks(self, chat_id: int, argument: str = "") -> None:
-        normalized = argument.casefold()
-        if normalized not in {"", "all", "archived"}:
+        aliases = {
+            "active": "active",
+            "running": "running",
+            "waiting": "waiting",
+            "completed": "completed",
+            "done": "completed",
+            "failed": "failed",
+            "errors": "failed",
+            "interrupted": "interrupted",
+            "stopped": "interrupted",
+            "new": "new",
+            "idle": "idle",
+            "archived": "archived",
+            "all": "all",
+        }
+        requested = argument.casefold()
+        normalized = aliases.get(requested, "") if requested else ""
+        if requested and not normalized:
             await self._telegram.send_message(
-                chat_id, "Используй /list, /list archived или /list all."
+                chat_id,
+                "Неизвестный фильтр. Используй /list running, /list waiting, "
+                "/list completed, /list failed, /list interrupted, "
+                "/list archived или /list all.",
             )
             return
-        archived = True if normalized == "archived" else None if normalized == "all" else False
+        archived = (
+            True
+            if normalized == "archived"
+            else None
+            if normalized == "all"
+            else False
+        )
         tasks = self._state.list_tasks(chat_id, archived=archived)
+        if normalized not in {"", "all", "archived"}:
+            tasks = [
+                task
+                for task in tasks
+                if self._task_matches_status_filter(task, normalized)
+            ]
         if not tasks:
-            message = (
-                "Архив пуст."
-                if normalized == "archived"
-                else "Задач пока нет. Создай первую командой /new."
-            )
-            await self._telegram.send_message(
-                chat_id, message
-            )
+            if normalized == "archived":
+                message = "Архив пуст."
+            elif normalized:
+                message = f"Задач с фильтром «{normalized}» нет."
+            else:
+                message = "Задач пока нет. Создай первую командой /new."
+            await self._telegram.send_message(chat_id, message)
             return
         selected = self._state.get_selected_task(chat_id)
-        lines = ["Архив:" if normalized == "archived" else "Задачи:"]
+        heading = "Архив:" if normalized == "archived" else "Задачи:"
+        if normalized not in {"", "archived", "all"}:
+            heading = f"Задачи — {normalized}:"
+        lines = [heading]
         for task in tasks:
             marker = "→" if selected and task.id == selected.id else " "
-            icon = "📦" if task.archived_at else _task_status_icon(task.status)
+            status = self._effective_task_status(task)
+            icon = "📦" if task.archived_at else _task_status_icon(status)
             title = task.title or "Без названия"
             lines.append(f"{marker} {icon} #{task.number} — {title}")
         if normalized == "archived":
@@ -419,6 +465,23 @@ class TelegramCodexBot:
         else:
             lines.append("\nПереключиться: /switch <номер>")
         await self._telegram.send_message(chat_id, "\n".join(lines))
+
+    def _effective_task_status(self, task: TaskRecord) -> str:
+        active = self._active_by_task.get(task.id)
+        if active is None:
+            return task.status
+        flags = set(
+            self._thread_statuses.get(active.thread_id, {}).get("activeFlags", [])
+        )
+        if flags & {"waitingOnApproval", "waitingOnUserInput"}:
+            return "waiting"
+        return "running"
+
+    def _task_matches_status_filter(self, task: TaskRecord, status_filter: str) -> bool:
+        status = self._effective_task_status(task)
+        if status_filter == "active":
+            return status in {"running", "waiting"}
+        return status == status_filter
 
     async def _switch_task(self, chat_id: int, argument: str) -> None:
         task = await self._task_from_argument(chat_id, argument, require_argument=True)
@@ -451,6 +514,40 @@ class TelegramCodexBot:
         else:
             text = f"У задачи #{task.number} пока нет сохранённого результата."
         await self._telegram.send_message(chat_id, text)
+
+    async def _rename_task(self, chat_id: int, argument: str) -> None:
+        number, separator, title = argument.partition(" ")
+        title = " ".join(title.split())
+        if not separator or not title:
+            await self._telegram.send_message(
+                chat_id, "Используй /rename <номер> <новое название>."
+            )
+            return
+        task = await self._task_from_argument(
+            chat_id, number, require_argument=True, allow_archived=True
+        )
+        if task is None:
+            return
+        if len(title) > 140:
+            await self._telegram.send_message(
+                chat_id, "Название слишком длинное: максимум 140 символов."
+            )
+            return
+        self._state.set_task_title(task.id, title)
+        if task.thread_id is not None:
+            try:
+                await self._app_server.request(
+                    "thread/name/set",
+                    {
+                        "threadId": task.thread_id,
+                        "name": f"{TELEGRAM_TITLE_PREFIX} {title}"[:160],
+                    },
+                )
+            except AppServerError as error:
+                LOGGER.warning("Could not rename Codex thread: %s", error)
+        await self._telegram.send_message(
+            chat_id, f"Задача #{task.number} переименована: {title}"
+        )
 
     async def _archive_task(self, chat_id: int, argument: str) -> None:
         task = await self._task_from_argument(
@@ -905,6 +1002,41 @@ class TelegramCodexBot:
         LOGGER.info("Queued Telegram message in outbox; message_id=%d", message_id)
         self._outbox_wakeup.set()
         return message_id
+
+    async def _send_stalled_task_reminders(self) -> None:
+        while True:
+            await asyncio.sleep(STALLED_TASK_CHECK_SECONDS)
+            self._enqueue_stalled_task_reminders()
+
+    def _enqueue_stalled_task_reminders(self, *, now: float | None = None) -> None:
+        current_time = time.monotonic() if now is None else now
+        for active in list(self._active_by_task.values()):
+            idle_seconds = current_time - active.last_activity_at
+            if idle_seconds < STALLED_TASK_REMINDER_SECONDS:
+                continue
+            if active.reminded_for_activity_at == active.last_activity_at:
+                continue
+
+            flags = set(
+                self._thread_statuses.get(active.thread_id, {}).get(
+                    "activeFlags", []
+                )
+            )
+            if "waitingOnApproval" in flags:
+                reason = "ожидает подтверждения действия"
+            elif "waitingOnUserInput" in flags:
+                reason = "ожидает твоего ответа"
+            else:
+                reason = "не присылала новых событий Codex"
+            duration = _format_duration(idle_seconds)
+            self._enqueue_outbox(
+                active.chat_id,
+                f"Напоминание: задача #{active.task_number} {reason} уже {duration}.\n\n"
+                f"Проверить: /status {active.task_number}\n"
+                f"Остановить: /cancel {active.task_number}",
+                formatted=False,
+            )
+            active.reminded_for_activity_at = active.last_activity_at
 
     async def _deliver_outbox(self) -> None:
         while True:
@@ -1595,6 +1727,7 @@ def _task_status_icon(status: str) -> str:
     return {
         "new": "⚪️",
         "running": "🟡",
+        "waiting": "🟠",
         "completed": "🟢",
         "failed": "🔴",
         "interrupted": "⚫️",
@@ -1606,6 +1739,7 @@ def _task_status_label(status: str) -> str:
     return {
         "new": "ожидает первого сообщения",
         "running": "работает",
+        "waiting": "ожидает действия пользователя",
         "completed": "завершена",
         "failed": "завершилась с ошибкой",
         "interrupted": "прервана",

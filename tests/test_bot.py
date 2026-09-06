@@ -9,6 +9,7 @@ from codex_telegram_bot.approvals import (
     is_safe_read_only_approval,
 )
 from codex_telegram_bot.bot import (
+    STALLED_TASK_REMINDER_SECONDS,
     TELEGRAM_CLIENT_INSTRUCTIONS,
     ActiveTurn,
     TelegramCodexBot,
@@ -1021,6 +1022,77 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
             telegram.sent[3][1], "Результат задачи #1:\n\nЗамечаний нет."
         )
         self.assertTrue(telegram.formatted[3])
+
+    async def test_task_can_be_renamed(self) -> None:
+        telegram = FakeTelegram()
+        state = FakeState()
+        app_server = FakeAppServer()
+        app_server.responses["thread/name/set"] = {}
+        bot = make_bot(telegram=telegram, state=state, app_server=app_server)
+
+        await bot._rename_task(CHAT_ID, "1   Ревью новой ручки ")
+
+        self.assertEqual(state.get_task(CHAT_ID, 1).title, "Ревью новой ручки")
+        self.assertEqual(
+            telegram.sent[-1][1], "Задача #1 переименована: Ревью новой ручки"
+        )
+        self.assertEqual(
+            app_server.requests[-1],
+            (
+                "thread/name/set",
+                {
+                    "threadId": THREAD_ID,
+                    "name": "[Telegram] Ревью новой ручки",
+                },
+            ),
+        )
+
+    async def test_list_filters_tasks_by_live_status(self) -> None:
+        telegram = FakeTelegram()
+        state = FakeState()
+        completed = state.create_task(CHAT_ID, USER_ID, "Готовая задача")
+        state.complete_task(completed.id, "completed", "Готово", formatted=True)
+        bot = make_bot(telegram=telegram, state=state)
+        bot._register_active(ActiveTurn(CHAT_ID, THREAD_ID, TURN_ID))
+        bot._thread_statuses[THREAD_ID] = {
+            "type": "active",
+            "activeFlags": ["waitingOnUserInput"],
+        }
+
+        await bot._list_tasks(CHAT_ID, "waiting")
+        await bot._list_tasks(CHAT_ID, "completed")
+
+        self.assertIn("🟠 #1 — Review", telegram.sent[0][1])
+        self.assertNotIn("Готовая задача", telegram.sent[0][1])
+        self.assertIn("🟢 #2 — Готовая задача", telegram.sent[1][1])
+        self.assertNotIn("Review", telegram.sent[1][1])
+
+    async def test_stalled_task_reminder_is_sent_once_per_activity_period(self) -> None:
+        state = FakeState()
+        bot = make_bot(state=state)
+        active = ActiveTurn(
+            CHAT_ID,
+            THREAD_ID,
+            TURN_ID,
+            task_id=1,
+            task_number=1,
+            last_activity_at=100.0,
+        )
+        bot._register_active(active)
+
+        reminder_time = 100.0 + STALLED_TASK_REMINDER_SECONDS
+        bot._enqueue_stalled_task_reminders(now=reminder_time)
+        bot._enqueue_stalled_task_reminders(now=reminder_time + 60)
+
+        self.assertEqual(len(state.outbox), 1)
+        self.assertIn("задача #1", state.outbox[0].text)
+        self.assertIn("/status 1", state.outbox[0].text)
+
+        active.touch()
+        bot._enqueue_stalled_task_reminders(
+            now=active.last_activity_at + STALLED_TASK_REMINDER_SECONDS
+        )
+        self.assertEqual(len(state.outbox), 2)
 
     async def test_two_tasks_can_have_concurrent_turns(self) -> None:
         telegram = FakeTelegram()
