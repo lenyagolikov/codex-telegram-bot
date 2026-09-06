@@ -156,6 +156,29 @@ class FakeState:
         self.selected[chat_id] = task.id
         return task
 
+    def create_attached_task(
+        self,
+        chat_id: int,
+        user_id: int,
+        thread_id: str,
+        title: str | None,
+        *,
+        status: str,
+        result_text: str | None,
+        result_formatted: bool,
+    ) -> TaskRecord:
+        task = self.create_task(chat_id, user_id, title)
+        return self._replace(
+            task.id,
+            thread_id=thread_id,
+            status=status,
+            result_text=result_text,
+            result_formatted=result_formatted,
+            completed_at="now"
+            if status in {"completed", "failed", "interrupted"}
+            else None,
+        )
+
     def list_tasks(
         self, chat_id: int, *, archived: bool | None = False
     ) -> list[TaskRecord]:
@@ -1022,6 +1045,159 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
             telegram.sent[3][1], "Результат задачи #1:\n\nЗамечаний нет."
         )
         self.assertTrue(telegram.formatted[3])
+
+    async def test_threads_lists_unattached_codex_threads_for_current_cwd(self) -> None:
+        telegram = FakeTelegram()
+        app_server = FakeAppServer()
+        app_server.responses["thread/list"] = {
+            "data": [
+                {
+                    "id": THREAD_ID,
+                    "name": "Already attached",
+                    "status": {"type": "notLoaded"},
+                },
+                {
+                    "id": "external-thread",
+                    "name": "Ревью из Desktop",
+                    "status": {"type": "idle"},
+                },
+            ],
+            "nextCursor": None,
+        }
+        bot = make_bot(telegram=telegram, app_server=app_server)
+
+        await bot._list_available_threads(CHAT_ID)
+
+        self.assertNotIn("Already attached", telegram.sent[-1][1])
+        self.assertIn("1. 🔵 Ревью из Desktop", telegram.sent[-1][1])
+        method, params = app_server.requests[-1]
+        self.assertEqual(method, "thread/list")
+        self.assertEqual(params["cwd"], "/tmp")
+        self.assertIn("appServer", params["sourceKinds"])
+
+    async def test_attach_selects_thread_and_shows_last_exchange(self) -> None:
+        telegram = FakeTelegram()
+        state = FakeState()
+        app_server = FakeAppServer()
+        app_server.responses.update(
+            {
+                "thread/list": {
+                    "data": [
+                        {
+                            "id": "external-thread",
+                            "name": "Ревью из Desktop",
+                            "status": {"type": "notLoaded"},
+                        }
+                    ],
+                    "nextCursor": None,
+                },
+                "thread/read": {
+                    "thread": {
+                        "id": "external-thread",
+                        "name": "Ревью из Desktop",
+                        "status": {"type": "notLoaded"},
+                        "turns": [
+                            {
+                                "id": "external-turn",
+                                "status": "completed",
+                                "items": [
+                                    {
+                                        "id": "user-1",
+                                        "type": "userMessage",
+                                        "content": [
+                                            {
+                                                "type": "text",
+                                                "text": "Проверь scooters-core",
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "id": "commentary-1",
+                                        "type": "agentMessage",
+                                        "phase": "commentary",
+                                        "text": "Читаю код.",
+                                    },
+                                    {
+                                        "id": "answer-1",
+                                        "type": "agentMessage",
+                                        "phase": "final_answer",
+                                        "text": "Нашла одно замечание.",
+                                    },
+                                ],
+                            }
+                        ],
+                    }
+                },
+            }
+        )
+        bot = make_bot(telegram=telegram, app_server=app_server, state=state)
+
+        await bot._list_available_threads(CHAT_ID)
+        await bot._attach_available_thread(CHAT_ID, USER_ID, "1")
+
+        attached = state.get_task(CHAT_ID, 2)
+        self.assertIsNotNone(attached)
+        assert attached is not None
+        self.assertEqual(attached.thread_id, "external-thread")
+        self.assertEqual(attached.status, "completed")
+        self.assertEqual(attached.result_text, "Нашла одно замечание.")
+        self.assertEqual(state.get_selected_task(CHAT_ID), attached)
+        self.assertIn("Тред подключён как задача #2", telegram.sent[-1][1])
+        self.assertIn("Проверь scooters-core", telegram.sent[-1][1])
+        self.assertIn("Нашла одно замечание", telegram.sent[-1][1])
+        self.assertNotIn("Читаю код", telegram.sent[-1][1])
+        self.assertTrue(telegram.formatted[-1])
+
+    async def test_history_shows_requested_number_of_latest_messages(self) -> None:
+        telegram = FakeTelegram()
+        app_server = FakeAppServer()
+        app_server.responses["thread/read"] = {
+            "thread": {
+                "id": THREAD_ID,
+                "status": {"type": "notLoaded"},
+                "turns": [
+                    {
+                        "id": "turn-old",
+                        "status": "completed",
+                        "items": [
+                            {
+                                "type": "userMessage",
+                                "content": [{"type": "text", "text": "Старый вопрос"}],
+                            },
+                            {
+                                "type": "agentMessage",
+                                "phase": "final_answer",
+                                "text": "Старый ответ",
+                            },
+                        ],
+                    },
+                    {
+                        "id": "turn-new",
+                        "status": "completed",
+                        "items": [
+                            {
+                                "type": "userMessage",
+                                "content": [{"type": "text", "text": "Новый вопрос"}],
+                            },
+                            {
+                                "type": "agentMessage",
+                                "phase": "final_answer",
+                                "text": "Новый ответ",
+                            },
+                        ],
+                    },
+                ],
+            }
+        }
+        bot = make_bot(telegram=telegram, app_server=app_server)
+
+        await bot._send_history(CHAT_ID, "1 2")
+
+        self.assertNotIn("Старый вопрос", telegram.sent[-1][1])
+        self.assertNotIn("Старый ответ", telegram.sent[-1][1])
+        self.assertIn("Новый вопрос", telegram.sent[-1][1])
+        self.assertIn("Новый ответ", telegram.sent[-1][1])
+        self.assertTrue(telegram.formatted[-1])
 
     async def test_task_can_be_renamed(self) -> None:
         telegram = FakeTelegram()

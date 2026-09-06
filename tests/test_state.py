@@ -101,6 +101,34 @@ class StateStoreTaskTests(unittest.TestCase):
             self.assertEqual(len(state.list_tasks(101)), 2)
             state.close()
 
+    def test_attached_thread_is_persisted_and_selected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            state = StateStore(path)
+            state.create_task(101, 202, "Telegram task")
+
+            attached = state.create_attached_task(
+                101,
+                202,
+                "desktop-thread",
+                "Desktop task",
+                status="completed",
+                result_text="Готово",
+                result_formatted=True,
+            )
+            state.close()
+
+            reopened = StateStore(path)
+            persisted = reopened.get_task_by_thread_id("desktop-thread")
+            selected = reopened.get_selected_task(101)
+            reopened.close()
+
+        self.assertEqual(persisted, attached)
+        self.assertEqual(selected, attached)
+        self.assertEqual(attached.number, 2)
+        self.assertEqual(attached.result_text, "Готово")
+        self.assertIsNotNone(attached.completed_at)
+
     def test_existing_tasks_schema_gets_archived_column(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.sqlite3"

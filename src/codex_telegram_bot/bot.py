@@ -24,6 +24,8 @@ OUTBOX_RETRY_SECONDS = 10
 INTERACTION_TIMEOUT_SECONDS = 24 * 60 * 60
 STALLED_TASK_REMINDER_SECONDS = 30 * 60
 STALLED_TASK_CHECK_SECONDS = 60
+AVAILABLE_THREADS_LIMIT = 20
+EXTERNAL_THREAD_SOURCE_KINDS = ("cli", "vscode", "exec", "appServer", "unknown")
 _MCP_FORM_CANCELLED = object()
 _MCP_FORM_SKIPPED = object()
 TELEGRAM_CLIENT_INSTRUCTIONS = """\
@@ -52,6 +54,13 @@ class ActiveTurn:
     def touch(self) -> None:
         self.last_activity_at = time.monotonic()
         self.reminded_for_activity_at = None
+
+
+@dataclass(frozen=True, slots=True)
+class AvailableThread:
+    thread_id: str
+    title: str
+    status: str
 
 
 @dataclass(slots=True)
@@ -95,6 +104,7 @@ class TelegramCodexBot:
         self._thread_statuses: dict[str, dict[str, Any]] = {}
         self._pending_callbacks: dict[str, PendingCallback] = {}
         self._pending_text_by_chat: dict[int, list[PendingTextInput]] = {}
+        self._available_threads_by_chat: dict[int, list[AvailableThread]] = {}
         self._outbox_wakeup = asyncio.Event()
         app_server.notification_handler = self._handle_codex_notification
         app_server.server_request_handler = self._handle_codex_request
@@ -205,9 +215,12 @@ class TelegramCodexBot:
                 "/start",
                 "/help",
                 "/new",
+                "/threads",
+                "/attach",
                 "/list",
                 "/switch",
                 "/result",
+                "/history",
                 "/rename",
                 "/archive",
                 "/unarchive",
@@ -225,12 +238,18 @@ class TelegramCodexBot:
             await self._send_help(chat_id)
         elif command == "/new":
             await self._new_thread(chat_id, user_id, command_argument)
+        elif command == "/threads":
+            await self._list_available_threads(chat_id)
+        elif command == "/attach":
+            await self._attach_available_thread(chat_id, user_id, command_argument)
         elif command == "/list":
             await self._list_tasks(chat_id, command_argument)
         elif command == "/switch":
             await self._switch_task(chat_id, command_argument)
         elif command == "/result":
             await self._send_result(chat_id, command_argument)
+        elif command == "/history":
+            await self._send_history(chat_id, command_argument)
         elif command == "/rename":
             await self._rename_task(chat_id, command_argument)
         elif command == "/archive":
@@ -372,9 +391,12 @@ class TelegramCodexBot:
             chat_id,
             "Я передаю сообщения в Codex на текущем хосте.\n\n"
             "/new [название] — создать и выбрать новую задачу\n"
+            "/threads — показать доступные треды Codex\n"
+            "/attach <номер> — подключить тред из списка /threads\n"
             "/list — показать все задачи и их статусы\n"
             "/switch <номер> — переключиться на задачу\n"
             "/result <номер> — показать сохранённый результат\n"
+            "/history [номер] [количество|all] — показать историю диалога\n"
             "/rename <номер> <название> — переименовать задачу\n"
             "/archive <номер> — скрыть завершённую задачу из списка\n"
             "/unarchive <номер> — восстановить задачу из архива\n"
@@ -399,6 +421,133 @@ class TelegramCodexBot:
             + (f" — {task.title}" if task.title else "")
             + ". Она выбрана; отправь следующим сообщением промпт.",
         )
+
+    async def _list_available_threads(self, chat_id: int) -> None:
+        try:
+            response = await self._app_server.request(
+                "thread/list",
+                {
+                    "cursor": None,
+                    "limit": AVAILABLE_THREADS_LIMIT,
+                    "sortKey": "updated_at",
+                    "sortDirection": "desc",
+                    "sourceKinds": list(EXTERNAL_THREAD_SOURCE_KINDS),
+                    "archived": False,
+                    "cwd": str(self._config.codex_cwd),
+                },
+            )
+        except AppServerError as error:
+            LOGGER.warning("Could not list Codex threads: %s", error)
+            await self._telegram.send_message(
+                chat_id, f"Не удалось получить список тредов Codex: {error}"
+            )
+            return
+
+        candidates: list[AvailableThread] = []
+        for raw_thread in list(response.get("data") or []):
+            thread_id = str(raw_thread.get("id") or "")
+            if not thread_id or self._state.get_task_by_thread_id(thread_id) is not None:
+                continue
+            if raw_thread.get("ephemeral"):
+                continue
+            status = str((raw_thread.get("status") or {}).get("type") or "notLoaded")
+            title = _thread_title(raw_thread)
+            candidates.append(AvailableThread(thread_id, title, status))
+
+        self._available_threads_by_chat[chat_id] = candidates
+        if not candidates:
+            await self._telegram.send_message(
+                chat_id,
+                "Нет доступных тредов Codex в текущей рабочей папке. Уже "
+                "подключённые треды находятся в /list.",
+            )
+            return
+
+        lines = ["Доступные треды Codex:"]
+        for number, candidate in enumerate(candidates, start=1):
+            lines.append(
+                f"{number}. {_thread_runtime_icon(candidate.status)} {candidate.title}"
+            )
+        lines.append("\nПодключить: /attach <номер>")
+        await self._telegram.send_message(chat_id, "\n".join(lines))
+
+    async def _attach_available_thread(
+        self, chat_id: int, user_id: int, argument: str
+    ) -> None:
+        candidates = self._available_threads_by_chat.get(chat_id)
+        if not candidates:
+            await self._telegram.send_message(
+                chat_id, "Сначала получи актуальный список командой /threads."
+            )
+            return
+        try:
+            number = int(argument.removeprefix("#"))
+        except ValueError:
+            number = 0
+        if number < 1 or number > len(candidates):
+            await self._telegram.send_message(
+                chat_id, "Укажи номер из последнего списка, например /attach 2."
+            )
+            return
+        candidate = candidates[number - 1]
+        if self._state.get_task_by_thread_id(candidate.thread_id) is not None:
+            self._available_threads_by_chat.pop(chat_id, None)
+            await self._telegram.send_message(
+                chat_id,
+                "Этот тред уже подключён. Обнови список командой /threads.",
+            )
+            return
+
+        try:
+            response = await self._app_server.request(
+                "thread/read",
+                {"threadId": candidate.thread_id, "includeTurns": True},
+            )
+            thread = response["thread"]
+        except (AppServerError, KeyError, TypeError) as error:
+            LOGGER.warning("Could not read Codex thread before attaching: %s", error)
+            await self._telegram.send_message(
+                chat_id, f"Не удалось прочитать выбранный тред: {error}"
+            )
+            return
+
+        runtime_status = str((thread.get("status") or {}).get("type") or "notLoaded")
+        if runtime_status == "active":
+            await self._telegram.send_message(
+                chat_id,
+                "Этот тред сейчас выполняет задачу в другом клиенте. Дождись "
+                "завершения, снова вызови /threads и затем /attach.",
+            )
+            return
+
+        messages = _conversation_messages(thread)
+        last_answer = next(
+            (text for role, text in reversed(messages) if role == "assistant"),
+            None,
+        )
+        title = _thread_title(thread) or candidate.title
+        task = self._state.create_attached_task(
+            chat_id,
+            user_id,
+            candidate.thread_id,
+            title,
+            status=_stored_thread_status(thread),
+            result_text=last_answer,
+            result_formatted=True,
+        )
+        self._thread_statuses[candidate.thread_id] = dict(thread.get("status") or {})
+        self._available_threads_by_chat.pop(chat_id, None)
+
+        text = (
+            f"Тред подключён как задача #{task.number} — {task.title}.\n"
+            "Она выбрана; следующее сообщение продолжит тот же диалог."
+        )
+        last_exchange = _format_last_exchange(messages)
+        if last_exchange:
+            text += f"\n\nПоследний обмен:\n\n{last_exchange}"
+        else:
+            text += "\n\nВ треде пока нет текстовых сообщений."
+        await self._telegram.send_message(chat_id, text, formatted=True)
 
     async def _list_tasks(self, chat_id: int, argument: str = "") -> None:
         aliases = {
@@ -514,6 +663,73 @@ class TelegramCodexBot:
         else:
             text = f"У задачи #{task.number} пока нет сохранённого результата."
         await self._telegram.send_message(chat_id, text)
+
+    async def _send_history(self, chat_id: int, argument: str = "") -> None:
+        parts = argument.split()
+        if len(parts) > 2:
+            await self._telegram.send_message(
+                chat_id, "Используй /history [номер] [количество|all]."
+            )
+            return
+        task_argument = parts[0] if parts else ""
+        task = await self._task_from_argument(
+            chat_id,
+            task_argument,
+            allow_archived=True,
+        )
+        if task is None:
+            return
+        if task.thread_id is None:
+            await self._telegram.send_message(
+                chat_id, f"У задачи #{task.number} ещё нет Codex-треда."
+            )
+            return
+
+        message_limit: int | None = 10
+        if len(parts) == 2:
+            if parts[1].casefold() == "all":
+                message_limit = None
+            else:
+                try:
+                    message_limit = int(parts[1])
+                except ValueError:
+                    message_limit = 0
+                if not 1 <= message_limit <= 50:
+                    await self._telegram.send_message(
+                        chat_id,
+                        "Количество должно быть от 1 до 50 либо all.",
+                    )
+                    return
+
+        try:
+            response = await self._app_server.request(
+                "thread/read",
+                {"threadId": task.thread_id, "includeTurns": True},
+            )
+            thread = response["thread"]
+        except (AppServerError, KeyError, TypeError) as error:
+            LOGGER.warning("Could not read Codex thread history: %s", error)
+            await self._telegram.send_message(
+                chat_id, f"Не удалось прочитать историю задачи: {error}"
+            )
+            return
+
+        messages = _conversation_messages(thread)
+        if message_limit is not None:
+            messages = messages[-message_limit:]
+        if not messages:
+            await self._telegram.send_message(
+                chat_id, f"У задачи #{task.number} нет текстовой истории."
+            )
+            return
+
+        history = _format_conversation(messages)
+        await self._telegram.send_message(
+            chat_id,
+            f"История задачи #{task.number} — {task.title or 'Без названия'}:\n\n"
+            f"{history}",
+            formatted=True,
+        )
 
     async def _rename_task(self, chat_id: int, argument: str) -> None:
         number, separator, title = argument.partition(" ")
@@ -1721,6 +1937,106 @@ def _title_from_prompt(prompt: str) -> str:
     if not normalized:
         return "Новый диалог"
     return normalized[:140]
+
+
+def _thread_title(thread: dict[str, Any]) -> str:
+    value = thread.get("name") or thread.get("preview") or "Без названия"
+    return _title_from_prompt(str(value))
+
+
+def _stored_thread_status(thread: dict[str, Any]) -> str:
+    runtime_status = str((thread.get("status") or {}).get("type") or "notLoaded")
+    if runtime_status == "active":
+        return "running"
+    turns = list(thread.get("turns") or [])
+    if not turns:
+        return "idle"
+    return {
+        "completed": "completed",
+        "failed": "failed",
+        "interrupted": "interrupted",
+        "inProgress": "running",
+    }.get(str(turns[-1].get("status") or ""), "idle")
+
+
+def _conversation_messages(thread: dict[str, Any]) -> list[tuple[str, str]]:
+    messages: list[tuple[str, str]] = []
+    for turn in list(thread.get("turns") or []):
+        user_messages: list[str] = []
+        final_answers: list[str] = []
+        fallback_answers: list[str] = []
+        review_answers: list[str] = []
+        plans: list[str] = []
+        for item in list(turn.get("items") or []):
+            item_type = item.get("type")
+            if item_type == "userMessage":
+                parts: list[str] = []
+                for content in list(item.get("content") or []):
+                    if content.get("type") == "text" and content.get("text"):
+                        parts.append(str(content["text"]))
+                    elif content.get("type") in {"image", "localImage"}:
+                        parts.append("[изображение]")
+                if parts:
+                    user_messages.append("\n".join(parts))
+            elif item_type == "agentMessage" and item.get("text"):
+                phase = item.get("phase")
+                if phase == "final_answer":
+                    final_answers.append(str(item["text"]))
+                elif phase != "commentary":
+                    fallback_answers.append(str(item["text"]))
+            elif item_type == "exitedReviewMode" and item.get("review"):
+                review_answers.append(str(item["review"]))
+            elif item_type == "plan" and item.get("text"):
+                plans.append(str(item["text"]))
+
+        messages.extend(("user", text) for text in user_messages)
+        answers = final_answers or review_answers or fallback_answers or plans
+        if answers:
+            messages.append(("assistant", "\n\n".join(answers)))
+    return messages
+
+
+def _format_conversation(messages: list[tuple[str, str]]) -> str:
+    labels = {"user": "Ты", "assistant": "Codex"}
+    return "\n\n".join(
+        f"**{labels.get(role, role)}:**\n{text}" for role, text in messages
+    )
+
+
+def _format_last_exchange(messages: list[tuple[str, str]]) -> str:
+    if not messages:
+        return ""
+    assistant_index = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if messages[index][0] == "assistant"
+        ),
+        None,
+    )
+    if assistant_index is None:
+        return _format_conversation([messages[-1]])
+    user_index = next(
+        (
+            index
+            for index in range(assistant_index - 1, -1, -1)
+            if messages[index][0] == "user"
+        ),
+        None,
+    )
+    selected = [messages[assistant_index]]
+    if user_index is not None:
+        selected.insert(0, messages[user_index])
+    return _format_conversation(selected)
+
+
+def _thread_runtime_icon(status: str) -> str:
+    return {
+        "active": "🟡",
+        "idle": "🔵",
+        "notLoaded": "⚪️",
+        "systemError": "🔴",
+    }.get(status, "⚪️")
 
 
 def _task_status_icon(status: str) -> str:

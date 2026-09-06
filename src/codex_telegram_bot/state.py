@@ -171,6 +171,58 @@ class StateStore:
         assert task is not None
         return task
 
+    def create_attached_task(
+        self,
+        chat_id: int,
+        user_id: int,
+        thread_id: str,
+        title: str | None,
+        *,
+        status: str,
+        result_text: str | None,
+        result_formatted: bool,
+    ) -> TaskRecord:
+        row = self._connection.execute(
+            "SELECT COALESCE(MAX(task_number), 0) + 1 FROM tasks WHERE chat_id = ?",
+            (chat_id,),
+        ).fetchone()
+        number = int(row[0])
+        cursor = self._connection.execute(
+            """
+            INSERT INTO tasks (
+                chat_id, user_id, task_number, thread_id, title, status,
+                result_text, result_formatted,
+                completed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+                    CASE WHEN ? IN ('completed', 'failed', 'interrupted')
+                         THEN CURRENT_TIMESTAMP ELSE NULL END)
+            """,
+            (
+                chat_id,
+                user_id,
+                number,
+                thread_id,
+                title,
+                status,
+                result_text,
+                int(result_formatted),
+                status,
+            ),
+        )
+        task_id = int(cursor.lastrowid)
+        self._connection.execute(
+            """
+            INSERT INTO task_selections (chat_id, task_id) VALUES (?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET task_id = excluded.task_id
+            """,
+            (chat_id, task_id),
+        )
+        self._connection.commit()
+        task = self.get_task_by_id(task_id)
+        assert task is not None
+        return task
+
     def list_tasks(
         self, chat_id: int, *, archived: bool | None = False
     ) -> list[TaskRecord]:
