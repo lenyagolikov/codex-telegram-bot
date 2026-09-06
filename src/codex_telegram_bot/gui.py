@@ -35,6 +35,20 @@ LOCAL_TAB = "Локальный запуск"
 REMOTE_TAB = "Удалённый запуск"
 
 
+def _set_macos_application_icon(icon_path: Path) -> object | None:
+    if sys.platform != "darwin":
+        return None
+    try:
+        from AppKit import NSApplication, NSImage
+    except ImportError:
+        return None
+    image = NSImage.alloc().initWithContentsOfFile_(str(icon_path))
+    if image is None:
+        return None
+    NSApplication.sharedApplication().setApplicationIconImage_(image)
+    return image
+
+
 def _run_mode_for_tab(tab_name: str, current_mode: str) -> str:
     if tab_name == LOCAL_TAB:
         return "local"
@@ -97,7 +111,9 @@ def launch_gui(config_path: Path | None = None) -> None:
 
     icon_path = Path(__file__).resolve().parent / "assets" / "app-icon.png"
     header_icon = None
+    macos_application_icon = None
     if icon_path.is_file():
+        macos_application_icon = _set_macos_application_icon(icon_path)
         icon_image = Image.open(icon_path)
         header_icon = ctk.CTkImage(
             light_image=icon_image,
@@ -110,6 +126,7 @@ def launch_gui(config_path: Path | None = None) -> None:
             root._native_icon = native_icon  # type: ignore[attr-defined]
         except tk.TclError:
             pass
+    root._macos_application_icon = macos_application_icon  # type: ignore[attr-defined]
 
     class SettingsWindow:
         def __init__(self) -> None:

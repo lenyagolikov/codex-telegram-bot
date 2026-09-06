@@ -26,6 +26,7 @@ desktop = [
     "keyring>=25,<26",
     "pillow>=11,<13",
     "pyinstaller>=6.12,<7",
+    "pyobjc-framework-Cocoa>=11,<13; sys_platform == 'darwin'",
 ]
 dev = [
     "build>=1.2,<2",
