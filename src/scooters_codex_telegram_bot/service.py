@@ -91,7 +91,7 @@ def linux_unit_text(
         "After=network-online.target\n\n"
         "[Service]\n"
         "Type=simple\n"
-        f"WorkingDirectory={_systemd_quote(str(working_directory))}\n"
+        f"WorkingDirectory={_systemd_path(working_directory)}\n"
         f"{environment}"
         f"ExecStart={' '.join(_systemd_quote(value) for value in arguments)}\n"
         "Restart=always\n"
@@ -99,8 +99,8 @@ def linux_unit_text(
         "KillMode=control-group\n"
         "TimeoutStopSec=15\n"
         "UMask=0077\n"
-        f"StandardOutput=append:{_systemd_quote(str(log_dir / 'bot.out.log'))}\n"
-        f"StandardError=append:{_systemd_quote(str(log_dir / 'bot.err.log'))}\n\n"
+        f"StandardOutput=append:{_systemd_path(log_dir / 'bot.out.log')}\n"
+        f"StandardError=append:{_systemd_path(log_dir / 'bot.err.log')}\n\n"
         "[Install]\n"
         "WantedBy=default.target\n"
     )
@@ -367,3 +367,22 @@ class ServiceManager:
 def _systemd_quote(value: str) -> str:
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def _systemd_path(value: str | Path) -> str:
+    """Encode a path for directives that do not accept shell-style quoting."""
+    result: list[str] = []
+    for character in str(value):
+        if character in {"\n", "\r", "\x00"}:
+            raise ServiceError("Systemd paths must not contain control characters")
+        if character == "%":
+            result.append("%%")
+        elif character == "\\":
+            result.append(r"\x5c")
+        elif character == " ":
+            result.append(r"\x20")
+        elif character == "\t":
+            result.append(r"\x09")
+        else:
+            result.append(character)
+    return "".join(result)

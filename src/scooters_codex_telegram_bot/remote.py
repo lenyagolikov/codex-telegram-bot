@@ -480,6 +480,23 @@ if voice_enabled:
 def quote(value):
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
+def systemd_path(value):
+    result = []
+    for character in str(value):
+        if character in {"\n", "\r", "\x00"}:
+            raise SystemExit("Пути systemd не должны содержать управляющие символы")
+        if character == "%":
+            result.append("%%")
+        elif character == "\\":
+            result.append(r"\x5c")
+        elif character == " ":
+            result.append(r"\x20")
+        elif character == "\t":
+            result.append(r"\x09")
+        else:
+            result.append(character)
+    return "".join(result)
+
 path_entries = [
     str(codex.parent),
     str(pathlib.Path(sys.executable).parent),
@@ -492,14 +509,14 @@ unit = (
     "Description=Scooters Codex Telegram Bot\n"
     "Wants=network-online.target\nAfter=network-online.target\n\n"
     "[Service]\nType=simple\n"
-    f"WorkingDirectory={quote(cwd)}\n"
+    f"WorkingDirectory={systemd_path(cwd)}\n"
     f"Environment={quote('PATH=' + path_value)}\n"
     f"Environment={quote('PYTHONPATH=' + str(runtime))}\n"
     f"ExecStart={quote(sys.executable)} -m scooters_codex_telegram_bot "
     f"--service --config {quote(config_path)}\n"
     "Restart=always\nRestartSec=10\nKillMode=control-group\nTimeoutStopSec=15\nUMask=0077\n"
-    f"StandardOutput=append:{quote(install / 'logs' / 'bot.out.log')}\n"
-    f"StandardError=append:{quote(install / 'logs' / 'bot.err.log')}\n\n"
+    f"StandardOutput=append:{systemd_path(install / 'logs' / 'bot.out.log')}\n"
+    f"StandardError=append:{systemd_path(install / 'logs' / 'bot.err.log')}\n\n"
     "[Install]\nWantedBy=default.target\n"
 )
 unit_path = home / ".config" / "systemd" / "user" / "scooters-codex-telegram-bot.service"

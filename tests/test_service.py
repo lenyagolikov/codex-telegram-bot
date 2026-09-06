@@ -27,7 +27,9 @@ class ServiceDefinitionTests(unittest.TestCase):
             )
 
         self.assertIn('ExecStart="/opt/Codex Telegram Bot/bin" "--service"', unit)
-        self.assertIn('WorkingDirectory="', unit)
+        self.assertIn("WorkingDirectory=", unit)
+        self.assertIn(r"project\x20with\x20spaces", unit)
+        self.assertNotIn('WorkingDirectory="', unit)
         self.assertIn("Restart=always", unit)
         self.assertIn(
             'Environment="PATH=/opt/homebrew/bin:/usr/bin:/bin"', unit
