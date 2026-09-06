@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .app_server import AppServerError, CodexAppServer
-from .approvals import approval_path, is_safe_read_only_approval
+from .approvals import approval_path, assess_safe_read_only_approval
 from .config import Config
 from .state import OutboxMessage, StateStore
 from .telegram_api import TelegramApi, TelegramError
@@ -728,26 +728,24 @@ class TelegramCodexBot:
             return {"decision": "decline"}
 
         kind = "command" if "commandExecution" in method else "file"
-        if (
-            kind == "command"
-            and self._config.auto_approve_safe_read_only
-            and is_safe_read_only_approval(
+        if kind == "command" and self._config.auto_approve_safe_read_only:
+            assessment = assess_safe_read_only_approval(
                 params, self._config.auto_approve_read_roots
             )
-        ):
-            action_types = sorted(
-                {
-                    str(action.get("type"))
-                    for action in params.get("commandActions") or []
-                    if isinstance(action, dict)
-                }
-            )
+            if assessment.approved:
+                LOGGER.info(
+                    "Auto-approved read-only command; source=%s action_types=%s cwd=%s",
+                    assessment.reason,
+                    ",".join(assessment.action_types) or "<none>",
+                    approval_path(params.get("cwd")) or "<unknown>",
+                )
+                return {"decision": "accept"}
             LOGGER.info(
-                "Auto-approved read-only command; action_types=%s cwd=%s",
-                ",".join(action_types),
+                "Read-only auto-approval skipped; reason=%s action_types=%s cwd=%s",
+                assessment.reason,
+                ",".join(assessment.action_types) or "<none>",
                 approval_path(params.get("cwd")) or "<unknown>",
             )
-            return {"decision": "accept"}
 
         self._thread_statuses[thread_id] = {
             "type": "active",

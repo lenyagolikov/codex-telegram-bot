@@ -48,6 +48,14 @@ class RemoteServiceManagerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "__init__.py").write_text("VERSION = 1\n", encoding="utf-8")
+            (root / "approvals.py").write_text("", encoding="utf-8")
+            (root / "gui.py").write_text("", encoding="utf-8")
+            (root / "desktop.py").write_text("", encoding="utf-8")
+            (root / "remote.py").write_text("", encoding="utf-8")
+            (root / "secrets.py").write_text("", encoding="utf-8")
+            assets = root / "assets"
+            assets.mkdir()
+            (assets / "app-icon.png").write_bytes(b"not-an-image")
             (root / "ignored.txt").write_text("ignored\n", encoding="utf-8")
             manager = RemoteServiceManager(
                 self._settings(), ssh_bin=sys.executable, runtime_root=root
@@ -61,7 +69,13 @@ class RemoteServiceManagerTests(unittest.TestCase):
                 archive_path.unlink(missing_ok=True)
 
         self.assertIn("scooters_codex_telegram_bot/__init__.py", names)
+        self.assertIn("scooters_codex_telegram_bot/approvals.py", names)
         self.assertNotIn("scooters_codex_telegram_bot/ignored.txt", names)
+        self.assertNotIn("scooters_codex_telegram_bot/gui.py", names)
+        self.assertNotIn("scooters_codex_telegram_bot/desktop.py", names)
+        self.assertNotIn("scooters_codex_telegram_bot/remote.py", names)
+        self.assertNotIn("scooters_codex_telegram_bot/secrets.py", names)
+        self.assertNotIn("scooters_codex_telegram_bot/assets/app-icon.png", names)
 
     def test_token_is_sent_in_stdin_and_never_in_remote_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

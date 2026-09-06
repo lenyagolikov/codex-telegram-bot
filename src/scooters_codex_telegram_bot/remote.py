@@ -30,6 +30,14 @@ _EXCLUDED_PARTS = {
     "dist",
     "var",
 }
+_REMOTE_RUNTIME_EXCLUDED_FILES = frozenset(
+    {
+        "desktop.py",
+        "gui.py",
+        "remote.py",
+        "secrets.py",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,9 +245,7 @@ class RemoteServiceManager:
                     relative = source.relative_to(self.runtime_root)
                     if any(part in _EXCLUDED_PARTS for part in relative.parts):
                         continue
-                    if source.is_file() and (
-                        source.suffix == ".py" or "assets" in relative.parts
-                    ):
+                    if _is_headless_runtime_file(source, relative):
                         archive.add(
                             source,
                             arcname=(
@@ -339,6 +345,16 @@ def _runtime_source_root() -> Path:
             "-", "_"
         )
     return Path(__file__).resolve().parent
+
+
+def _is_headless_runtime_file(source: Path, relative: Path) -> bool:
+    """Keep the remote systemd deployment independent from desktop UI code."""
+    return (
+        source.is_file()
+        and source.suffix == ".py"
+        and len(relative.parts) == 1
+        and relative.name not in _REMOTE_RUNTIME_EXCLUDED_FILES
+    )
 
 
 def _run(

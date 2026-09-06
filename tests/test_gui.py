@@ -2,7 +2,26 @@ from __future__ import annotations
 
 import unittest
 
-from scooters_codex_telegram_bot.gui import _shortcut_action
+from scooters_codex_telegram_bot.gui import (
+    GENERAL_TAB,
+    LOCAL_TAB,
+    REMOTE_TAB,
+    _run_mode_for_tab,
+    _shortcut_action,
+)
+
+
+class RunModeTests(unittest.TestCase):
+    def test_launch_tabs_select_their_own_mode(self) -> None:
+        self.assertEqual(_run_mode_for_tab(LOCAL_TAB, "remote"), "local")
+        self.assertEqual(_run_mode_for_tab(REMOTE_TAB, "local"), "remote")
+
+    def test_general_tab_preserves_last_launch_mode(self) -> None:
+        self.assertEqual(_run_mode_for_tab(GENERAL_TAB, "remote"), "remote")
+        self.assertEqual(_run_mode_for_tab(GENERAL_TAB, "local"), "local")
+
+    def test_invalid_saved_mode_falls_back_to_local(self) -> None:
+        self.assertEqual(_run_mode_for_tab(GENERAL_TAB, "invalid"), "local")
 
 
 class ShortcutTests(unittest.TestCase):

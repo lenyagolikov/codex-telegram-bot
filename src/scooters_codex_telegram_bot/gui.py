@@ -30,6 +30,17 @@ MUTED = ("#687086", "#8E96AA")
 WINDOW_BACKGROUND = ("#F2F4F8", "#0D0F14")
 CARD_BACKGROUND = ("#FFFFFF", "#171A22")
 FIELD_BACKGROUND = ("#F7F8FB", "#20242E")
+GENERAL_TAB = "Общие настройки"
+LOCAL_TAB = "Локальный запуск"
+REMOTE_TAB = "Удалённый запуск"
+
+
+def _run_mode_for_tab(tab_name: str, current_mode: str) -> str:
+    if tab_name == LOCAL_TAB:
+        return "local"
+    if tab_name == REMOTE_TAB:
+        return "remote"
+    return current_mode if current_mode in {"local", "remote"} else "local"
 
 
 def _shortcut_action(keysym: str, keycode: int, platform: str) -> str | None:
@@ -112,24 +123,19 @@ def launch_gui(config_path: Path | None = None) -> None:
             self.context_edit_widget: tk.Entry | tk.Text | None = None
             self.status_label: ctk.CTkLabel
             self.token_entry: ctk.CTkEntry
-            self.run_mode = tk.StringVar(
-                value=(
-                    "На сервере"
-                    if self.values.get("RUN_MODE", "local") == "remote"
-                    else "Локально"
-                )
+            self.run_mode = _run_mode_for_tab(
+                "", self.values.get("RUN_MODE", "local")
             )
             self._build()
             self._install_edit_support()
-            if self._is_remote():
-                self.tabs.set("Удалённый сервер")
-            self._refresh_status()
+            self.tabs.set(REMOTE_TAB if self._is_remote() else LOCAL_TAB)
+            self._change_tab()
 
         def _build(self) -> None:
             page = ctk.CTkFrame(root, fg_color="transparent")
             page.pack(fill="both", expand=True, padx=20, pady=16)
             page.grid_columnconfigure(0, weight=1)
-            page.grid_rowconfigure(2, weight=1)
+            page.grid_rowconfigure(1, weight=1)
 
             header = ctk.CTkFrame(page, fg_color="transparent")
             header.grid(row=0, column=0, sticky="ew", pady=(0, 14))
@@ -164,25 +170,6 @@ def launch_gui(config_path: Path | None = None) -> None:
             self.appearance_menu.set("Система")
             self.appearance_menu.pack(side="right")
 
-            mode_bar = ctk.CTkFrame(page, fg_color="transparent")
-            mode_bar.grid(row=1, column=0, sticky="ew", pady=(0, 12))
-            ctk.CTkLabel(
-                mode_bar,
-                text="Где работает бот",
-                text_color=MUTED,
-                font=ctk.CTkFont(size=13, weight="bold"),
-            ).pack(side="left")
-            self.mode_selector = ctk.CTkSegmentedButton(
-                mode_bar,
-                values=["Локально", "На сервере"],
-                variable=self.run_mode,
-                command=self._change_run_mode,
-                selected_color=ACCENT,
-                selected_hover_color=ACCENT_HOVER,
-                height=36,
-            )
-            self.mode_selector.pack(side="right")
-
             content = ctk.CTkFrame(
                 page,
                 fg_color=CARD_BACKGROUND,
@@ -190,7 +177,7 @@ def launch_gui(config_path: Path | None = None) -> None:
                 border_width=1,
                 border_color=("#E3E6ED", "#292D38"),
             )
-            content.grid(row=2, column=0, sticky="nsew")
+            content.grid(row=1, column=0, sticky="nsew")
 
             self.tabs = ctk.CTkTabview(
                 content,
@@ -201,61 +188,138 @@ def launch_gui(config_path: Path | None = None) -> None:
                 corner_radius=16,
             )
             self.tabs.pack(fill="both", expand=True, padx=18, pady=(12, 6))
-            basic_tab = self.tabs.add("Локальные настройки")
-            remote_tab = self.tabs.add("Удалённый сервер")
-            advanced_tab = self.tabs.add("Дополнительно")
-            basic = self._scrollable_tab(basic_tab)
+            general_tab = self.tabs.add(GENERAL_TAB)
+            local_tab = self.tabs.add(LOCAL_TAB)
+            remote_tab = self.tabs.add(REMOTE_TAB)
+            general = self._scrollable_tab(general_tab)
+            local = self._scrollable_tab(local_tab)
             remote = self._scrollable_tab(remote_tab)
-            advanced = self._scrollable_tab(advanced_tab)
-            basic.grid_columnconfigure(1, weight=1)
+            general.grid_columnconfigure(1, weight=1)
+            local.grid_columnconfigure(1, weight=1)
             remote.grid_columnconfigure(1, weight=1)
-            advanced.grid_columnconfigure(1, weight=1)
 
-            self._add_token_entry(basic, 0)
+            self._add_token_entry(general, 0)
             self._add_entry(
-                basic,
+                general,
                 1,
                 "Разрешённые user ID",
                 "TELEGRAM_ALLOWED_USER_IDS",
                 hint="Несколько ID указываются через запятую",
             )
-            self._add_path_entry(
-                basic,
-                2,
-                "Рабочая папка Codex",
-                "CODEX_CWD",
-                choose_directory=True,
-            )
-            self._add_path_entry(
-                basic,
-                3,
-                "Команда Codex",
-                "CODEX_BIN",
-                choose_directory=False,
-            )
             self._add_entry(
-                basic,
-                4,
+                general,
+                2,
                 "Модель",
                 "CODEX_MODEL",
                 hint="Оставьте пустым, чтобы использовать настройку Codex",
             )
             self._add_option(
-                basic,
-                5,
+                general,
+                3,
                 "Reasoning effort",
                 "CODEX_REASONING_EFFORT",
                 ["По умолчанию", "low", "medium", "high", "xhigh", "max", "ultra"],
             )
 
+            self._add_option(
+                general,
+                4,
+                "Сеть Telegram",
+                "TELEGRAM_IP_FAMILY",
+                ["auto", "ipv4", "ipv6"],
+                default="auto",
+            )
+            self._add_entry(
+                general,
+                5,
+                "Таймаут polling",
+                "POLL_TIMEOUT_SECONDS",
+                default="30",
+                suffix="сек.",
+            )
+            self._add_switch(
+                general,
+                6,
+                "Распознавать голосовые сообщения",
+                "VOICE_TRANSCRIPTION_ENABLED",
+            )
+            self._add_entry(
+                general, 7, "Whisper-модель", "WHISPER_MODEL", default="small"
+            )
+            self._add_entry(
+                general, 8, "Язык Whisper", "WHISPER_LANGUAGE", default="ru"
+            )
+            self._add_switch(
+                general,
+                9,
+                "Автоматически подтверждать безопасное чтение",
+                "AUTO_APPROVE_SAFE_READ_ONLY",
+            )
+            self._add_entry(
+                general,
+                10,
+                "Разрешённые корни чтения",
+                "AUTO_APPROVE_READ_ROOTS",
+                hint="Пути через запятую; по умолчанию — рабочая папка",
+            )
+
+            warning = ctk.CTkFrame(
+                general,
+                fg_color=("#FFF7E6", "#2B2418"),
+                corner_radius=12,
+            )
+            warning.grid(
+                row=11, column=0, columnspan=3, sticky="ew", padx=14, pady=(16, 8)
+            )
             ctk.CTkLabel(
-                basic,
+                warning,
+                text=(
+                    "Автоподтверждение работает только для чтения, поиска и "
+                    "просмотра файлов внутри разрешённых папок."
+                ),
+                text_color=("#8A5A00", "#F6C66C"),
+                justify="left",
+                anchor="w",
+                wraplength=680,
+            ).pack(fill="x", padx=14, pady=11)
+
+            ctk.CTkLabel(
+                general,
                 text=f"Файл настроек  ·  {selected_config_path}",
                 text_color=MUTED,
                 font=ctk.CTkFont(size=12),
                 anchor="w",
                 wraplength=690,
-            ).grid(row=6, column=0, columnspan=3, sticky="ew", padx=14, pady=(18, 6))
+            ).grid(
+                row=12, column=0, columnspan=3, sticky="ew", padx=14, pady=(12, 6)
+            )
+
+            self._add_path_entry(
+                local,
+                0,
+                "Рабочая папка Codex",
+                "CODEX_CWD",
+                choose_directory=True,
+            )
+            self._add_path_entry(
+                local,
+                1,
+                "Команда Codex",
+                "CODEX_BIN",
+                choose_directory=False,
+            )
+            ctk.CTkLabel(
+                local,
+                text=(
+                    "Локальный запуск использует Codex и рабочую папку на этом "
+                    "компьютере."
+                ),
+                text_color=MUTED,
+                font=ctk.CTkFont(size=12),
+                anchor="w",
+                justify="left",
+                wraplength=660,
+            ).grid(row=2, column=0, columnspan=3, sticky="ew", padx=14, pady=(12, 6))
 
             self._add_entry(
                 remote,
@@ -329,87 +393,25 @@ def launch_gui(config_path: Path | None = None) -> None:
                 wraplength=660,
             ).grid(row=9, column=0, columnspan=3, sticky="ew", padx=14, pady=(10, 6))
 
-            self._add_option(
-                advanced,
-                0,
-                "Сеть Telegram",
-                "TELEGRAM_IP_FAMILY",
-                ["auto", "ipv4", "ipv6"],
-                default="auto",
-            )
-            self._add_entry(
-                advanced,
-                1,
-                "Таймаут polling",
-                "POLL_TIMEOUT_SECONDS",
-                default="30",
-                suffix="сек.",
-            )
-            self._add_switch(
-                advanced,
-                2,
-                "Распознавать голосовые сообщения",
-                "VOICE_TRANSCRIPTION_ENABLED",
-            )
-            self._add_entry(
-                advanced, 3, "Whisper-модель", "WHISPER_MODEL", default="small"
-            )
-            self._add_entry(
-                advanced, 4, "Язык Whisper", "WHISPER_LANGUAGE", default="ru"
-            )
-            self._add_switch(
-                advanced,
-                5,
-                "Автоматически подтверждать безопасное чтение",
-                "AUTO_APPROVE_SAFE_READ_ONLY",
-            )
-            self._add_entry(
-                advanced,
-                6,
-                "Разрешённые корни чтения",
-                "AUTO_APPROVE_READ_ROOTS",
-                hint="Пути через запятую; по умолчанию — рабочая папка",
-            )
-
-            warning = ctk.CTkFrame(
-                advanced,
-                fg_color=("#FFF7E6", "#2B2418"),
-                corner_radius=12,
-            )
-            warning.grid(
-                row=7, column=0, columnspan=3, sticky="ew", padx=14, pady=(16, 8)
-            )
-            ctk.CTkLabel(
-                warning,
-                text=(
-                    "Автоподтверждение работает только для чтения, поиска и "
-                    "просмотра файлов внутри разрешённых папок."
-                ),
-                text_color=("#8A5A00", "#F6C66C"),
-                justify="left",
-                anchor="w",
-                wraplength=680,
-            ).pack(fill="x", padx=14, pady=11)
-
             footer = ctk.CTkFrame(page, fg_color="transparent")
-            footer.grid(row=3, column=0, sticky="ew", pady=(12, 0))
-            status_card = ctk.CTkFrame(
+            footer.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+            self.status_card = ctk.CTkFrame(
                 footer,
                 fg_color=CARD_BACKGROUND,
                 corner_radius=14,
                 border_width=1,
                 border_color=("#E3E6ED", "#292D38"),
             )
-            status_card.pack(side="left")
+            self.status_card.pack(side="left")
             self.status_label = ctk.CTkLabel(
-                status_card,
+                self.status_card,
                 text="●  Проверка…",
                 text_color=MUTED,
                 font=ctk.CTkFont(size=13, weight="bold"),
             )
             self.status_label.pack(side="left", padx=(14, 8), pady=10)
             ctk.CTkButton(
-                status_card,
+                self.status_card,
                 text="↻",
                 width=34,
                 height=30,
@@ -418,13 +420,21 @@ def launch_gui(config_path: Path | None = None) -> None:
                 text_color=("#3A4050", "#DDE1EA"),
                 command=self._refresh_status,
             ).pack(side="right", padx=(0, 6), pady=5)
-            self._button(
+            self.management_button = self._button(
                 footer,
                 "Управление",
                 self._open_service_controls,
                 secondary=True,
                 width=118,
-            ).pack(side="left", padx=(10, 0))
+            )
+            self.management_button.pack(side="left", padx=(10, 0))
+
+            self.run_mode_hint = ctk.CTkLabel(
+                footer,
+                text="Выберите локальный или удалённый запуск",
+                text_color=MUTED,
+                font=ctk.CTkFont(size=13, weight="bold"),
+            )
 
             primary_actions = ctk.CTkFrame(footer, fg_color="transparent")
             primary_actions.pack(side="right")
@@ -435,12 +445,14 @@ def launch_gui(config_path: Path | None = None) -> None:
                 secondary=True,
                 width=112,
             ).pack(side="left", padx=(0, 8))
-            self._button(
+            self.start_button = self._button(
                 primary_actions,
                 "Сохранить и запустить",
                 self._save_and_start,
-                width=205,
-            ).pack(side="left")
+                width=245,
+            )
+            self.start_button.pack(side="left")
+            self.tabs.configure(command=self._change_tab)
 
         @staticmethod
         def _scrollable_tab(parent):
@@ -853,14 +865,31 @@ def launch_gui(config_path: Path | None = None) -> None:
             modes = {"Система": "system", "Светлая": "light", "Тёмная": "dark"}
             ctk.set_appearance_mode(modes[value])
 
-        def _change_run_mode(self, value: str) -> None:
-            self.tabs.set(
-                "Удалённый сервер" if value == "На сервере" else "Локальные настройки"
+        def _change_tab(self) -> None:
+            selected_tab = self.tabs.get()
+            self.run_mode = _run_mode_for_tab(selected_tab, self.run_mode)
+            if selected_tab == GENERAL_TAB:
+                self.status_card.pack_forget()
+                self.management_button.pack_forget()
+                self.start_button.pack_forget()
+                self.run_mode_hint.pack(side="left")
+                return
+
+            self.run_mode_hint.pack_forget()
+            self.status_card.pack(side="left")
+            self.management_button.pack(side="left", padx=(10, 0))
+            self.start_button.configure(
+                text=(
+                    "Сохранить и запустить на сервере"
+                    if self._is_remote()
+                    else "Сохранить и запустить локально"
+                )
             )
+            self.start_button.pack(side="left")
             self._refresh_status()
 
         def _is_remote(self) -> bool:
-            return self.run_mode.get() == "На сервере"
+            return self.run_mode == "remote"
 
         def _configuration_values(self) -> dict[str, str]:
             result = dict(self.values)
@@ -990,7 +1019,11 @@ def launch_gui(config_path: Path | None = None) -> None:
             ).pack(fill="x", padx=24, pady=(22, 4))
             ctk.CTkLabel(
                 window,
-                text="Действия применяются к выбранному режиму работы.",
+                text=(
+                    "Действия применяются к удалённому запуску."
+                    if self._is_remote()
+                    else "Действия применяются к локальному запуску."
+                ),
                 text_color=MUTED,
                 font=ctk.CTkFont(size=13),
                 anchor="w",
