@@ -19,6 +19,7 @@ RUNTIME_CONFIG_KEYS = (
     "CODEX_BIN",
     "CODEX_MODEL",
     "CODEX_REASONING_EFFORT",
+    "APPROVALS_REVIEWER",
     "BOT_STATE_PATH",
     "TELEGRAM_IP_FAMILY",
     "POLL_TIMEOUT_SECONDS",
@@ -238,6 +239,7 @@ class Config:
     codex_model: str | None
     reasoning_effort: str | None
     state_path: Path
+    approvals_reviewer: str = "user"
     poll_timeout_seconds: int = 30
     telegram_ip_family: str = "auto"
     voice_transcription_enabled: bool = False
@@ -287,6 +289,11 @@ class Config:
         )
         model = environment.get("CODEX_MODEL", "").strip() or None
         effort = environment.get("CODEX_REASONING_EFFORT", "").strip() or None
+        approvals_reviewer = (
+            environment.get("APPROVALS_REVIEWER", "user").strip() or "user"
+        )
+        if approvals_reviewer not in {"user", "auto_review"}:
+            raise ConfigError("APPROVALS_REVIEWER must be user or auto_review")
         ip_family = environment.get("TELEGRAM_IP_FAMILY", "auto").strip().lower()
         if ip_family not in {"auto", "ipv4", "ipv6"}:
             raise ConfigError("TELEGRAM_IP_FAMILY must be auto, ipv4 or ipv6")
@@ -309,6 +316,7 @@ class Config:
             codex_model=model,
             reasoning_effort=effort,
             state_path=state_path,
+            approvals_reviewer=approvals_reviewer,
             poll_timeout_seconds=_parse_positive_int(
                 environment, "POLL_TIMEOUT_SECONDS", 30
             ),

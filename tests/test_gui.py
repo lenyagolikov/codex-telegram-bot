@@ -7,13 +7,44 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from codex_telegram_bot.gui import (
+    CODEX_MODEL_CHOICES,
+    DEFAULT_OPTION,
     GENERAL_TAB,
     LOCAL_TAB,
     REMOTE_TAB,
+    _approval_reviewer_display,
+    _approval_reviewer_value,
+    _option_config_value,
+    _option_display_value,
     _run_mode_for_tab,
     _set_macos_application_icon,
     _shortcut_action,
 )
+
+
+class ApprovalReviewerTests(unittest.TestCase):
+    def test_maps_auto_review_to_user_facing_label(self) -> None:
+        self.assertEqual(
+            _approval_reviewer_display("auto_review"), "Подтверждать за меня"
+        )
+        self.assertEqual(
+            _approval_reviewer_value("Подтверждать за меня"), "auto_review"
+        )
+
+
+class ModelOptionTests(unittest.TestCase):
+    def test_current_codex_models_are_available(self) -> None:
+        self.assertEqual(CODEX_MODEL_CHOICES[0], DEFAULT_OPTION)
+        self.assertIn("gpt-6-astra", CODEX_MODEL_CHOICES)
+        self.assertIn("gpt-5.6-sol", CODEX_MODEL_CHOICES)
+        self.assertIn("gpt-5.6-terra", CODEX_MODEL_CHOICES)
+        self.assertIn("gpt-5.6-luna", CODEX_MODEL_CHOICES)
+        self.assertIn("gpt-5.5", CODEX_MODEL_CHOICES)
+        self.assertIn("gpt-5.3-codex-spark", CODEX_MODEL_CHOICES)
+
+    def test_default_model_round_trips_as_empty_configuration(self) -> None:
+        self.assertEqual(_option_display_value("CODEX_MODEL", ""), DEFAULT_OPTION)
+        self.assertEqual(_option_config_value("CODEX_MODEL", DEFAULT_OPTION), "")
 
 
 class RunModeTests(unittest.TestCase):

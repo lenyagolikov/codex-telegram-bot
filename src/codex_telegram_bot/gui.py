@@ -33,6 +33,50 @@ FIELD_BACKGROUND = ("#F7F8FB", "#20242E")
 GENERAL_TAB = "Общие настройки"
 LOCAL_TAB = "Локальный запуск"
 REMOTE_TAB = "Удалённый запуск"
+DEFAULT_OPTION = "По умолчанию"
+CODEX_MODEL_CHOICES = [
+    DEFAULT_OPTION,
+    "gpt-6-astra",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "gpt-5.3-codex-spark",
+]
+APPROVAL_REVIEWER_LABELS = {
+    "user": "Спрашивать меня",
+    "auto_review": "Подтверждать за меня",
+}
+
+
+def _approval_reviewer_display(value: str) -> str:
+    return APPROVAL_REVIEWER_LABELS.get(value, APPROVAL_REVIEWER_LABELS["user"])
+
+
+def _approval_reviewer_value(display_value: str) -> str:
+    for value, label in APPROVAL_REVIEWER_LABELS.items():
+        if display_value == label:
+            return value
+    return "user"
+
+
+def _option_display_value(key: str, saved_value: str) -> str:
+    if key in {"CODEX_MODEL", "CODEX_REASONING_EFFORT"} and not saved_value:
+        return DEFAULT_OPTION
+    if key == "APPROVALS_REVIEWER":
+        return _approval_reviewer_display(saved_value)
+    return saved_value
+
+
+def _option_config_value(key: str, display_value: str) -> str:
+    if (
+        key in {"CODEX_MODEL", "CODEX_REASONING_EFFORT"}
+        and display_value == DEFAULT_OPTION
+    ):
+        return ""
+    if key == "APPROVALS_REVIEWER":
+        return _approval_reviewer_value(display_value)
+    return display_value
 
 
 def _set_macos_application_icon(icon_path: Path) -> object | None:
@@ -212,12 +256,13 @@ def launch_gui(config_path: Path | None = None) -> None:
                 "TELEGRAM_ALLOWED_USER_IDS",
                 hint="Несколько ID указываются через запятую",
             )
-            self._add_entry(
+            self._add_option(
                 general,
                 2,
                 "Модель",
                 "CODEX_MODEL",
-                hint="Оставьте пустым, чтобы использовать настройку Codex",
+                CODEX_MODEL_CHOICES,
+                default="",
             )
             self._add_option(
                 general,
@@ -230,6 +275,14 @@ def launch_gui(config_path: Path | None = None) -> None:
             self._add_option(
                 general,
                 4,
+                "Подтверждения Codex",
+                "APPROVALS_REVIEWER",
+                list(APPROVAL_REVIEWER_LABELS.values()),
+                default="user",
+            )
+            self._add_option(
+                general,
+                5,
                 "Сеть Telegram",
                 "TELEGRAM_IP_FAMILY",
                 ["auto", "ipv4", "ipv6"],
@@ -237,7 +290,7 @@ def launch_gui(config_path: Path | None = None) -> None:
             )
             self._add_entry(
                 general,
-                5,
+                6,
                 "Таймаут polling",
                 "POLL_TIMEOUT_SECONDS",
                 default="30",
@@ -245,25 +298,25 @@ def launch_gui(config_path: Path | None = None) -> None:
             )
             self._add_switch(
                 general,
-                6,
+                7,
                 "Распознавать голосовые сообщения",
                 "VOICE_TRANSCRIPTION_ENABLED",
             )
             self._add_entry(
-                general, 7, "Whisper-модель", "WHISPER_MODEL", default="small"
+                general, 8, "Whisper-модель", "WHISPER_MODEL", default="small"
             )
             self._add_entry(
-                general, 8, "Язык Whisper", "WHISPER_LANGUAGE", default="ru"
+                general, 9, "Язык Whisper", "WHISPER_LANGUAGE", default="ru"
             )
             self._add_switch(
                 general,
-                9,
+                10,
                 "Автоматически подтверждать безопасное чтение",
                 "AUTO_APPROVE_SAFE_READ_ONLY",
             )
             self._add_entry(
                 general,
-                10,
+                11,
                 "Разрешённые корни чтения",
                 "AUTO_APPROVE_READ_ROOTS",
                 hint="Пути через запятую; по умолчанию — рабочая папка",
@@ -275,7 +328,7 @@ def launch_gui(config_path: Path | None = None) -> None:
                 corner_radius=12,
             )
             warning.grid(
-                row=11, column=0, columnspan=3, sticky="ew", padx=14, pady=(16, 8)
+                row=12, column=0, columnspan=3, sticky="ew", padx=14, pady=(16, 8)
             )
             ctk.CTkLabel(
                 warning,
@@ -297,7 +350,7 @@ def launch_gui(config_path: Path | None = None) -> None:
                 anchor="w",
                 wraplength=690,
             ).grid(
-                row=12, column=0, columnspan=3, sticky="ew", padx=14, pady=(12, 6)
+                row=13, column=0, columnspan=3, sticky="ew", padx=14, pady=(12, 6)
             )
 
             self._add_path_entry(
@@ -599,11 +652,7 @@ def launch_gui(config_path: Path | None = None) -> None:
             default: str = "",
         ) -> None:
             saved_value = self.values.get(key, default)
-            display_value = (
-                "По умолчанию"
-                if key == "CODEX_REASONING_EFFORT" and not saved_value
-                else saved_value
-            )
+            display_value = _option_display_value(key, saved_value)
             variable = tk.StringVar(value=display_value)
             self.variables[key] = variable
             self._field_label(parent, row, label)
@@ -901,12 +950,7 @@ def launch_gui(config_path: Path | None = None) -> None:
                     result[key] = "true" if value else "false"
                 else:
                     normalized = str(value).strip()
-                    if (
-                        key == "CODEX_REASONING_EFFORT"
-                        and normalized == "По умолчанию"
-                    ):
-                        normalized = ""
-                    result[key] = normalized
+                    result[key] = _option_config_value(key, normalized)
             codex_bin = result.get("CODEX_BIN", "codex") or "codex"
             if resolved_codex_bin := shutil.which(codex_bin):
                 # Preserve the symlink path: npm installs `codex` beside `node`,

@@ -137,6 +137,7 @@ def make_bot(
     *,
     voice_enabled: bool = False,
     auto_approve: bool = False,
+    approvals_reviewer: str = "user",
 ) -> TelegramCodexBot:
     config = Config(
         telegram_token="not-a-real-token",
@@ -146,6 +147,7 @@ def make_bot(
         codex_model=None,
         reasoning_effort=None,
         state_path=Path("/tmp/not-used.sqlite3"),
+        approvals_reviewer=approvals_reviewer,
         voice_transcription_enabled=voice_enabled,
         auto_approve_safe_read_only=auto_approve,
         auto_approve_read_roots=(Path("/tmp"),),
@@ -522,6 +524,17 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Never call those tools", TELEGRAM_CLIENT_INSTRUCTIONS)
         self.assertIn("internal tool-call payload", TELEGRAM_CLIENT_INSTRUCTIONS)
         self.assertIn("JSON", TELEGRAM_CLIENT_INSTRUCTIONS)
+
+    async def test_auto_review_is_forwarded_to_started_and_resumed_threads(self) -> None:
+        bot = make_bot(approvals_reviewer="auto_review")
+
+        self.assertEqual(
+            bot._start_thread_params()["approvalsReviewer"], "auto_review"
+        )
+        self.assertEqual(
+            bot._resume_thread_params(THREAD_ID)["approvalsReviewer"],
+            "auto_review",
+        )
 
     async def test_dynamic_tool_call_returns_retryable_failure(self) -> None:
         bot = make_bot()

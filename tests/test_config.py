@@ -80,6 +80,32 @@ class ConfigTests(unittest.TestCase):
             ), self.assertRaisesRegex(ConfigError, "TELEGRAM_IP_FAMILY"):
                 Config.from_environment(root / "missing.env")
 
+    def test_auto_review_can_be_selected_as_approvals_reviewer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            config = Config.from_mapping(
+                {
+                    "TELEGRAM_BOT_TOKEN": "test-token",
+                    "CODEX_BIN": sys.executable,
+                    "CODEX_CWD": directory,
+                    "APPROVALS_REVIEWER": "auto_review",
+                }
+            )
+
+        self.assertEqual(config.approvals_reviewer, "auto_review")
+
+    def test_invalid_approvals_reviewer_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(
+            ConfigError, "APPROVALS_REVIEWER"
+        ):
+            Config.from_mapping(
+                {
+                    "TELEGRAM_BOT_TOKEN": "test-token",
+                    "CODEX_BIN": sys.executable,
+                    "CODEX_CWD": directory,
+                    "APPROVALS_REVIEWER": "always",
+                }
+            )
+
     def test_dotenv_round_trip_supports_spaces_and_quotes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "settings" / ".env"

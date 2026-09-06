@@ -506,7 +506,7 @@ class TelegramCodexBot:
         params: dict[str, Any] = {
             "cwd": str(self._config.codex_cwd),
             "approvalPolicy": "on-request",
-            "approvalsReviewer": "user",
+            "approvalsReviewer": self._config.approvals_reviewer,
             "sandbox": "workspace-write",
             "developerInstructions": TELEGRAM_CLIENT_INSTRUCTIONS,
         }
