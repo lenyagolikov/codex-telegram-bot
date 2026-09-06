@@ -200,6 +200,28 @@ class StateStoreTaskTests(unittest.TestCase):
         self.assertEqual(task.number, 1)
         self.assertEqual(task.thread_id, "old")
 
+    def test_legacy_chat_migration_uses_next_available_task_number(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            state = StateStore(path)
+            state.create_task(101, 202, "Уже созданная задача")
+            state._connection.execute(
+                """
+                INSERT INTO chats (chat_id, user_id, thread_id)
+                VALUES (101, 202, 'old-thread')
+                """
+            )
+            state._connection.commit()
+            state.close()
+
+            reopened = StateStore(path)
+            migrated = reopened.get_task_by_thread_id("old-thread")
+            reopened.close()
+
+        self.assertIsNotNone(migrated)
+        assert migrated is not None
+        self.assertEqual(migrated.number, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -120,14 +120,23 @@ class StateStore:
                 "SELECT id FROM tasks WHERE thread_id = ?", (thread_id,)
             ).fetchone()
             if existing is None:
+                next_number_row = self._connection.execute(
+                    """
+                    SELECT COALESCE(MAX(task_number), 0) + 1
+                    FROM tasks
+                    WHERE chat_id = ?
+                    """,
+                    (chat_id,),
+                ).fetchone()
+                next_number = int(next_number_row[0])
                 cursor = self._connection.execute(
                     """
                     INSERT INTO tasks (
                         chat_id, user_id, task_number, thread_id, title, status
                     )
-                    VALUES (?, ?, 1, ?, 'Существующий диалог', 'idle')
+                    VALUES (?, ?, ?, ?, 'Существующий диалог', 'idle')
                     """,
-                    (chat_id, user_id, thread_id),
+                    (chat_id, user_id, next_number, thread_id),
                 )
                 task_id = int(cursor.lastrowid)
             else:
