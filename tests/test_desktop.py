@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scooters_codex_telegram_bot.desktop import _app_bundle_for_executable
+from codex_telegram_bot.desktop import _app_bundle_for_executable
 
 
 class MacosBundleTests(unittest.TestCase):

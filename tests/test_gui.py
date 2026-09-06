@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from scooters_codex_telegram_bot.gui import (
+from codex_telegram_bot.gui import (
     GENERAL_TAB,
     LOCAL_TAB,
     REMOTE_TAB,

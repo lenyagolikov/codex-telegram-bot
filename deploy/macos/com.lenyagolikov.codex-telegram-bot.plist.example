@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.scooters.codex-telegram-bot</string>
+    <string>com.lenyagolikov.codex-telegram-bot</string>
     <key>ProgramArguments</key>
     <array>
         <string>__BOT_EXECUTABLE__</string>

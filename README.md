@@ -1,4 +1,4 @@
-# Scooters Codex Telegram Bot
+# Codex Telegram Bot
 
 Приватный Telegram-интерфейс для Codex. Бот принимает текстовые и голосовые
 сообщения, передаёт их в `codex app-server` и возвращает в Telegram финальный
@@ -40,8 +40,8 @@ Codex CLI должен самостоятельно запускаться на 
 
 Проект предоставляет две оболочки над одним ядром бота:
 
-- `scooters-codex-telegram-bot-gui` — графическая настройка и управление;
-- `scooters-codex-telegram-bot` — обычный terminal/headless-запуск, в том
+- `codex-telegram-bot-gui` — графическая настройка и управление;
+- `codex-telegram-bot` — обычный terminal/headless-запуск, в том
   числе как `systemd` user service.
 
 Удалённая установка не запускает и не копирует GUI. На Linux-сервере остаются
@@ -52,7 +52,7 @@ GUI при этом отвечает только за настройку и у�
 ## Установка готового приложения
 
 Скачай архив для своей ОС со страницы
-[GitHub Releases](https://github.com/lenyagolikov/scooters-codex-telegram-bot/releases):
+[GitHub Releases](https://github.com/lenyagolikov/codex-telegram-bot/releases):
 
 - `CodexTelegramBot-macos-arm64.zip` для Mac с Apple Silicon;
 - `CodexTelegramBot-linux-x86_64.tar.gz` для Linux x86_64;
@@ -81,7 +81,7 @@ bundle в LaunchServices.
 4. Нажми «Проверить подключение», затем «Сохранить и запустить».
 
 Приложение передаст на сервер только Python-runtime бота и его настройки,
-создаст user-service `scooters-codex-telegram-bot.service` и запустит его.
+создаст user-service `codex-telegram-bot.service` и запустит его.
 Локальный экземпляр перед этим автоматически останавливается, чтобы один
 Telegram-токен не опрашивался двумя процессами одновременно.
 
@@ -107,8 +107,8 @@ loginctl enable-linger "$USER"
 Склонируй репозиторий и перейди в него:
 
 ```bash
-git clone https://github.com/lenyagolikov/scooters-codex-telegram-bot.git
-cd scooters-codex-telegram-bot
+git clone https://github.com/lenyagolikov/codex-telegram-bot.git
+cd codex-telegram-bot
 ```
 
 ### macOS и Linux
@@ -142,7 +142,7 @@ python -m pip install ".[voice]"
 Открыть графическое окно настройки после установки из исходного кода:
 
 ```bash
-scooters-codex-telegram-bot-gui
+codex-telegram-bot-gui
 ```
 
 ## Настройка
@@ -177,13 +177,13 @@ CODEX_CWD=/absolute/path/to/project
 Проверка конфигурации без запуска бота:
 
 ```bash
-scooters-codex-telegram-bot --check
+codex-telegram-bot --check
 ```
 
 Запуск:
 
 ```bash
-scooters-codex-telegram-bot
+codex-telegram-bot
 ```
 
 Совместимый старый способ также оставлен:
@@ -205,9 +205,9 @@ CLI ищет конфигурацию в следующем порядке:
 
 | ОС | Конфигурация | SQLite-состояние |
 |---|---|---|
-| macOS | `~/Library/Application Support/scooters-codex-telegram-bot/.env` | там же, `state.sqlite3` |
-| Linux | `~/.config/scooters-codex-telegram-bot/.env` | `~/.local/state/scooters-codex-telegram-bot/state.sqlite3` |
-| Windows | `%APPDATA%\scooters-codex-telegram-bot\.env` | `%LOCALAPPDATA%\scooters-codex-telegram-bot\state.sqlite3` |
+| macOS | `~/Library/Application Support/codex-telegram-bot/.env` | там же, `state.sqlite3` |
+| Linux | `~/.config/codex-telegram-bot/.env` | `~/.local/state/codex-telegram-bot/state.sqlite3` |
+| Windows | `%APPDATA%\codex-telegram-bot\.env` | `%LOCALAPPDATA%\codex-telegram-bot\state.sqlite3` |
 
 Графическое приложение пытается сохранить токен Telegram в системном хранилище
 секретов: Keychain на macOS, Credential Manager на Windows или Secret Service
@@ -222,7 +222,7 @@ CLI ищет конфигурацию в следующем порядке:
 Фактически выбранный путь можно вывести командой:
 
 ```bash
-scooters-codex-telegram-bot --show-config-path
+codex-telegram-bot --show-config-path
 ```
 
 ## Переменные окружения
@@ -250,7 +250,7 @@ scooters-codex-telegram-bot --show-config-path
 | `REMOTE_SSH_USER` | SSH-пользователь | текущий пользователь |
 | `REMOTE_SSH_PORT` | SSH-порт | `22` |
 | `REMOTE_SSH_IDENTITY_FILE` | необязательный путь к приватному SSH-ключу | SSH agent/config |
-| `REMOTE_INSTALL_DIR` | runtime, состояние и логи на сервере | `~/.local/share/scooters-codex-telegram-bot` |
+| `REMOTE_INSTALL_DIR` | runtime, состояние и логи на сервере | `~/.local/share/codex-telegram-bot` |
 | `REMOTE_CODEX_CWD` | рабочая директория Codex на сервере | `~/arcadia` |
 | `REMOTE_CODEX_BIN` | команда или путь Codex CLI на сервере | `codex` |
 | `REMOTE_PYTHON_BIN` | Python 3.10+ на сервере | `/usr/bin/python3` |
@@ -273,7 +273,7 @@ WHISPER_LANGUAGE=ru
 
 В удалённом режиме `faster-whisper` должен быть установлен для Python из поля
 «Команда Python». Можно указать абсолютный путь к Python существующего
-virtualenv, например `/home/user/scooters-codex-telegram-bot/.venv/bin/python`.
+virtualenv, например `/home/user/codex-telegram-bot/.venv/bin/python`.
 
 ## Автоматическое подтверждение чтения
 
@@ -318,11 +318,11 @@ Linux, LaunchAgent в macOS или задачу Task Scheduler в Windows. Ст�
 Те же операции можно выполнить из терминала:
 
 ```bash
-scooters-codex-telegram-bot --install-service
-scooters-codex-telegram-bot --service-status
-scooters-codex-telegram-bot --restart-service
-scooters-codex-telegram-bot --stop-service
-scooters-codex-telegram-bot --uninstall-service
+codex-telegram-bot --install-service
+codex-telegram-bot --service-status
+codex-telegram-bot --restart-service
+codex-telegram-bot --stop-service
+codex-telegram-bot --uninstall-service
 ```
 
 Для готового приложения вместо имени команды укажи путь к исполняемому файлу.
@@ -337,25 +337,25 @@ scooters-codex-telegram-bot --uninstall-service
 Узнать путь CLI после активации virtualenv:
 
 ```bash
-command -v scooters-codex-telegram-bot
+command -v codex-telegram-bot
 ```
 
 На Windows:
 
 ```powershell
-(Get-Command scooters-codex-telegram-bot).Source
+(Get-Command codex-telegram-bot).Source
 ```
 
 ### Linux: systemd user service
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp deploy/linux/scooters-codex-telegram-bot.service.example \
-  ~/.config/systemd/user/scooters-codex-telegram-bot.service
+cp deploy/linux/codex-telegram-bot.service.example \
+  ~/.config/systemd/user/codex-telegram-bot.service
 # Отредактируй три __PLACEHOLDER__ в скопированном файле.
 systemctl --user daemon-reload
-systemctl --user enable --now scooters-codex-telegram-bot
-systemctl --user status scooters-codex-telegram-bot
+systemctl --user enable --now codex-telegram-bot
+systemctl --user status codex-telegram-bot
 ```
 
 Для работы без открытой SSH-сессии администратор может включить systemd linger:
@@ -367,12 +367,12 @@ loginctl enable-linger "$USER"
 ### macOS: LaunchAgent
 
 ```bash
-cp deploy/macos/com.scooters.codex-telegram-bot.plist.example \
-  ~/Library/LaunchAgents/com.scooters.codex-telegram-bot.plist
+cp deploy/macos/com.lenyagolikov.codex-telegram-bot.plist.example \
+  ~/Library/LaunchAgents/com.lenyagolikov.codex-telegram-bot.plist
 # Отредактируй __PLACEHOLDER__ и создай директорию для логов.
 launchctl bootstrap "gui/$(id -u)" \
-  ~/Library/LaunchAgents/com.scooters.codex-telegram-bot.plist
-launchctl print "gui/$(id -u)/com.scooters.codex-telegram-bot"
+  ~/Library/LaunchAgents/com.lenyagolikov.codex-telegram-bot.plist
+launchctl print "gui/$(id -u)/com.lenyagolikov.codex-telegram-bot"
 ```
 
 LaunchAgent не выполняется, пока Mac спит.
@@ -383,15 +383,15 @@ LaunchAgent не выполняется, пока Mac спит.
 
 ```powershell
 .\deploy\windows\install-task.ps1 `
-  -BotExecutable (Get-Command scooters-codex-telegram-bot).Source `
-  -ConfigFile "$env:APPDATA\scooters-codex-telegram-bot\.env"
+  -BotExecutable (Get-Command codex-telegram-bot).Source `
+  -ConfigFile "$env:APPDATA\codex-telegram-bot\.env"
 ```
 
 Проверка и удаление задачи:
 
 ```powershell
-Get-ScheduledTask -TaskName "Scooters Codex Telegram Bot"
-Unregister-ScheduledTask -TaskName "Scooters Codex Telegram Bot"
+Get-ScheduledTask -TaskName "Codex Telegram Bot"
+Unregister-ScheduledTask -TaskName "Codex Telegram Bot"
 ```
 
 Одновременно должна работать только одна копия бота с одним Telegram-токеном.
@@ -399,9 +399,9 @@ Unregister-ScheduledTask -TaskName "Scooters Codex Telegram Bot"
 При стандартной удалённой установке файлы находятся здесь:
 
 ```text
-~/.local/share/scooters-codex-telegram-bot/runtime/  # headless-код
-~/.local/share/scooters-codex-telegram-bot/config/.env
-~/.config/systemd/user/scooters-codex-telegram-bot.service
+~/.local/share/codex-telegram-bot/runtime/  # headless-код
+~/.local/share/codex-telegram-bot/config/.env
+~/.config/systemd/user/codex-telegram-bot.service
 ```
 
 Конфигурация содержит секреты и должна оставаться доступной только владельцу.

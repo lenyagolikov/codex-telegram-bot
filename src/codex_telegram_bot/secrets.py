@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-KEYRING_SERVICE = "scooters-codex-telegram-bot"
+KEYRING_SERVICE = "codex-telegram-bot"
 KEYRING_USERNAME = "telegram-bot-token"
 
 

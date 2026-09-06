@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scooters_codex_telegram_bot.state import StateStore
+from codex_telegram_bot.state import StateStore
 
 
 class StateStoreOutboxTests(unittest.TestCase):

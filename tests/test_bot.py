@@ -4,18 +4,18 @@ import asyncio
 import unittest
 from pathlib import Path
 
-from scooters_codex_telegram_bot.approvals import (
+from codex_telegram_bot.approvals import (
     assess_safe_read_only_approval,
     is_safe_read_only_approval,
 )
-from scooters_codex_telegram_bot.bot import (
+from codex_telegram_bot.bot import (
     TELEGRAM_CLIENT_INSTRUCTIONS,
     ActiveTurn,
     TelegramCodexBot,
 )
-from scooters_codex_telegram_bot.config import Config
-from scooters_codex_telegram_bot.state import OutboxMessage
-from scooters_codex_telegram_bot.telegram_api import TelegramError
+from codex_telegram_bot.config import Config
+from codex_telegram_bot.state import OutboxMessage
+from codex_telegram_bot.telegram_api import TelegramError
 
 CHAT_ID = 101
 USER_ID = 202

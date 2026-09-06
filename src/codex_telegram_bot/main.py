@@ -23,7 +23,7 @@ from .transcription import VoiceTranscriber
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="scooters-codex-telegram-bot",
+        prog="codex-telegram-bot",
         description="Bridge private Telegram chats to Codex App Server.",
     )
     parser.add_argument(

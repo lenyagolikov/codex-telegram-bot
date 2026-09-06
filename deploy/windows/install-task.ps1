@@ -1,10 +1,10 @@
 param(
-    [string]$BotExecutable = (Get-Command scooters-codex-telegram-bot).Source,
-    [string]$ConfigFile = "$env:APPDATA\scooters-codex-telegram-bot\.env"
+    [string]$BotExecutable = (Get-Command codex-telegram-bot).Source,
+    [string]$ConfigFile = "$env:APPDATA\codex-telegram-bot\.env"
 )
 
 $ErrorActionPreference = "Stop"
-$TaskName = "Scooters Codex Telegram Bot"
+$TaskName = "Codex Telegram Bot"
 $Arguments = "--config `"$ConfigFile`""
 $Action = New-ScheduledTaskAction -Execute $BotExecutable -Argument $Arguments
 $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME

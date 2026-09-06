@@ -249,7 +249,7 @@ class RemoteServiceManager:
                         archive.add(
                             source,
                             arcname=(
-                                PurePosixPath("scooters_codex_telegram_bot") / relative
+                                PurePosixPath("codex_telegram_bot") / relative
                             ).as_posix(),
                             recursive=False,
                         )
@@ -522,26 +522,26 @@ path_entries = [
 path_value = os.pathsep.join(dict.fromkeys(value for value in path_entries if value))
 unit = (
     "[Unit]\n"
-    "Description=Scooters Codex Telegram Bot\n"
+    "Description=Codex Telegram Bot\n"
     "Wants=network-online.target\nAfter=network-online.target\n\n"
     "[Service]\nType=simple\n"
     f"WorkingDirectory={systemd_path(cwd)}\n"
     f"Environment={quote('PATH=' + path_value)}\n"
     f"Environment={quote('PYTHONPATH=' + str(runtime))}\n"
-    f"ExecStart={quote(sys.executable)} -m scooters_codex_telegram_bot "
+    f"ExecStart={quote(sys.executable)} -m codex_telegram_bot "
     f"--service --config {quote(config_path)}\n"
     "Restart=always\nRestartSec=10\nKillMode=control-group\nTimeoutStopSec=15\nUMask=0077\n"
     f"StandardOutput=append:{systemd_path(install / 'logs' / 'bot.out.log')}\n"
     f"StandardError=append:{systemd_path(install / 'logs' / 'bot.err.log')}\n\n"
     "[Install]\nWantedBy=default.target\n"
 )
-unit_path = home / ".config" / "systemd" / "user" / "scooters-codex-telegram-bot.service"
+unit_path = home / ".config" / "systemd" / "user" / "codex-telegram-bot.service"
 unit_path.parent.mkdir(parents=True, exist_ok=True)
 unit_path.write_text(unit, encoding="utf-8")
 unit_path.chmod(0o600)
 subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
 subprocess.run(
-    ["systemctl", "--user", "enable", "--now", "scooters-codex-telegram-bot.service"],
+    ["systemctl", "--user", "enable", "--now", "codex-telegram-bot.service"],
     check=True,
 )
 print("Удалённый бот установлен и запущен")

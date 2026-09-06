@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from scooters_codex_telegram_bot.service import (
+from codex_telegram_bot.service import (
     ServiceManager,
     linux_unit_text,
     macos_plist_bytes,

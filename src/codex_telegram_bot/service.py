@@ -12,8 +12,8 @@ from pathlib import Path
 
 from .config import APP_NAME, default_log_dir
 
-MACOS_SERVICE_LABEL = "com.scooters.codex-telegram-bot"
-WINDOWS_TASK_NAME = "Scooters Codex Telegram Bot"
+MACOS_SERVICE_LABEL = "com.lenyagolikov.codex-telegram-bot"
+WINDOWS_TASK_NAME = "Codex Telegram Bot"
 
 
 class ServiceError(RuntimeError):
@@ -30,9 +30,9 @@ class ServiceStatus:
 def runtime_command() -> tuple[str, ...]:
     if getattr(sys, "frozen", False):
         return (sys.executable,)
-    if executable := shutil.which("scooters-codex-telegram-bot"):
+    if executable := shutil.which("codex-telegram-bot"):
         return (executable,)
-    return (sys.executable, "-m", "scooters_codex_telegram_bot")
+    return (sys.executable, "-m", "codex_telegram_bot")
 
 
 def service_environment_path(codex_bin: str) -> str:
@@ -86,7 +86,7 @@ def linux_unit_text(
     )
     return (
         "[Unit]\n"
-        "Description=Scooters Codex Telegram Bot\n"
+        "Description=Codex Telegram Bot\n"
         "Wants=network-online.target\n"
         "After=network-online.target\n\n"
         "[Service]\n"

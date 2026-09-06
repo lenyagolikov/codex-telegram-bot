@@ -10,7 +10,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-APP_NAME = "scooters-codex-telegram-bot"
+APP_NAME = "codex-telegram-bot"
 CONFIG_FILE_HEADER = "# Managed by Codex Telegram Bot. Do not commit this file.\n"
 RUNTIME_CONFIG_KEYS = (
     "TELEGRAM_BOT_TOKEN",

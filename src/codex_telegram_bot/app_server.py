@@ -61,8 +61,8 @@ class CodexAppServer:
             "initialize",
             {
                 "clientInfo": {
-                    "name": "scooters-codex-telegram-bot",
-                    "title": "Scooters Codex Telegram Bot",
+                    "name": "codex-telegram-bot",
+                    "title": "Codex Telegram Bot",
                     "version": __version__,
                 },
                 "capabilities": {"experimentalApi": True},

@@ -8,11 +8,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from scooters_codex_telegram_bot.remote import (
+from codex_telegram_bot.remote import (
     RemoteServiceManager,
     RemoteSettings,
 )
-from scooters_codex_telegram_bot.service import ServiceError
+from codex_telegram_bot.service import ServiceError
 
 
 class RemoteSettingsTests(unittest.TestCase):
@@ -68,14 +68,14 @@ class RemoteServiceManagerTests(unittest.TestCase):
             finally:
                 archive_path.unlink(missing_ok=True)
 
-        self.assertIn("scooters_codex_telegram_bot/__init__.py", names)
-        self.assertIn("scooters_codex_telegram_bot/approvals.py", names)
-        self.assertNotIn("scooters_codex_telegram_bot/ignored.txt", names)
-        self.assertNotIn("scooters_codex_telegram_bot/gui.py", names)
-        self.assertNotIn("scooters_codex_telegram_bot/desktop.py", names)
-        self.assertNotIn("scooters_codex_telegram_bot/remote.py", names)
-        self.assertNotIn("scooters_codex_telegram_bot/secrets.py", names)
-        self.assertNotIn("scooters_codex_telegram_bot/assets/app-icon.png", names)
+        self.assertIn("codex_telegram_bot/__init__.py", names)
+        self.assertIn("codex_telegram_bot/approvals.py", names)
+        self.assertNotIn("codex_telegram_bot/ignored.txt", names)
+        self.assertNotIn("codex_telegram_bot/gui.py", names)
+        self.assertNotIn("codex_telegram_bot/desktop.py", names)
+        self.assertNotIn("codex_telegram_bot/remote.py", names)
+        self.assertNotIn("codex_telegram_bot/secrets.py", names)
+        self.assertNotIn("codex_telegram_bot/assets/app-icon.png", names)
 
     def test_token_is_sent_in_stdin_and_never_in_remote_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

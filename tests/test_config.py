@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scooters_codex_telegram_bot.config import (
+from codex_telegram_bot.config import (
     Config,
     ConfigError,
     default_config_path,
@@ -46,7 +46,7 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             with (
-                patch("scooters_codex_telegram_bot.config.sys.platform", "linux"),
+                patch("codex_telegram_bot.config.sys.platform", "linux"),
                 patch.dict(
                     os.environ,
                     {
@@ -58,11 +58,11 @@ class ConfigTests(unittest.TestCase):
             ):
                 self.assertEqual(
                     default_config_path(),
-                    root / "config" / "scooters-codex-telegram-bot" / ".env",
+                    root / "config" / "codex-telegram-bot" / ".env",
                 )
                 self.assertEqual(
                     default_state_path(),
-                    root / "state" / "scooters-codex-telegram-bot" / "state.sqlite3",
+                    root / "state" / "codex-telegram-bot" / "state.sqlite3",
                 )
 
     def test_invalid_ip_family_is_rejected(self) -> None:
@@ -129,13 +129,13 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.codex_cwd, Path("/remote/workspace"))
 
     def test_default_macos_log_path(self) -> None:
-        with patch("scooters_codex_telegram_bot.config.sys.platform", "darwin"):
+        with patch("codex_telegram_bot.config.sys.platform", "darwin"):
             self.assertEqual(
                 default_log_dir(),
                 Path.home()
                 / "Library"
                 / "Logs"
-                / "scooters-codex-telegram-bot",
+                / "codex-telegram-bot",
             )
 
 

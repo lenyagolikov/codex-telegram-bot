@@ -4,7 +4,7 @@ import unittest
 from http.client import RemoteDisconnected
 from unittest.mock import AsyncMock, Mock
 
-from scooters_codex_telegram_bot.telegram_api import (
+from codex_telegram_bot.telegram_api import (
     TelegramApi,
     TelegramError,
     markdown_to_telegram_html,

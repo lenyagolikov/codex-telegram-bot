@@ -354,7 +354,7 @@ def launch_gui(config_path: Path | None = None) -> None:
                 4,
                 "Папка установки",
                 "REMOTE_INSTALL_DIR",
-                default="~/.local/share/scooters-codex-telegram-bot",
+                default="~/.local/share/codex-telegram-bot",
             )
             self._add_entry(
                 remote,

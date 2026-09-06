@@ -8,12 +8,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-MACOS_BUNDLE_IDENTIFIER = "com.scooters.codex-telegram-bot.desktop"
+MACOS_BUNDLE_IDENTIFIER = "com.lenyagolikov.codex-telegram-bot.desktop"
 
 
 def _project_version(project_root: Path) -> str:
     package_init = (
-        project_root / "src" / "scooters_codex_telegram_bot" / "__init__.py"
+        project_root / "src" / "codex_telegram_bot" / "__init__.py"
     ).read_text(encoding="utf-8")
     version = re.search(
         r'(?m)^__version__\s*=\s*"(?P<value>[^"]+)"\s*$', package_init
@@ -66,11 +66,11 @@ def main() -> None:
     icon_path = (
         project_root
         / "src"
-        / "scooters_codex_telegram_bot"
+        / "codex_telegram_bot"
         / "assets"
         / "app-icon.png"
     )
-    package_path = project_root / "src" / "scooters_codex_telegram_bot"
+    package_path = project_root / "src" / "codex_telegram_bot"
     arguments = [
         str(project_root / "run_desktop.py"),
         "--name=CodexTelegramBot",
@@ -82,8 +82,8 @@ def main() -> None:
         f"--workpath={project_root / 'build' / 'pyinstaller'}",
         f"--specpath={project_root / 'build'}",
         f"--icon={icon_path}",
-        f"--add-data={icon_path}:scooters_codex_telegram_bot/assets",
-        f"--add-data={package_path}:remote_runtime/scooters_codex_telegram_bot",
+        f"--add-data={icon_path}:codex_telegram_bot/assets",
+        f"--add-data={package_path}:remote_runtime/codex_telegram_bot",
         "--collect-all=customtkinter",
         "--collect-submodules=keyring.backends",
     ]
