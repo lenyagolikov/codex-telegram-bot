@@ -19,8 +19,6 @@ jobs:
             artifact: linux-x86_64
           - os: macos-14
             artifact: macos-arm64
-          - os: windows-latest
-            artifact: windows-x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -41,10 +39,6 @@ jobs:
       - name: Package macOS application
         if: runner.os == 'macOS'
         run: ditto -c -k --sequesterRsrc --keepParent dist/CodexTelegramBot.app CodexTelegramBot-macos-arm64.zip
-      - name: Package Windows application
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Compress-Archive -Path dist/CodexTelegramBot.exe -DestinationPath CodexTelegramBot-windows-x86_64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: CodexTelegramBot-${{ matrix.artifact }}

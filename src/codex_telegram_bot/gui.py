@@ -86,7 +86,7 @@ def launch_gui(config_path: Path | None = None) -> None:
             "run: python -m pip install '.[desktop]'"
         ) from error
 
-    ctk.set_appearance_mode("system")
+    ctk.set_appearance_mode("dark")
     ctk.set_default_color_theme("blue")
 
     selected_config_path = (config_path or default_config_path()).expanduser().resolve()
@@ -128,7 +128,7 @@ def launch_gui(config_path: Path | None = None) -> None:
             )
             self._build()
             self._install_edit_support()
-            self.tabs.set(REMOTE_TAB if self._is_remote() else LOCAL_TAB)
+            self.tabs.set(GENERAL_TAB)
             self._change_tab()
 
         def _build(self) -> None:
@@ -158,17 +158,6 @@ def launch_gui(config_path: Path | None = None) -> None:
                 font=ctk.CTkFont(size=14),
                 anchor="w",
             ).pack(fill="x", pady=(4, 0))
-
-            self.appearance_menu = ctk.CTkSegmentedButton(
-                header,
-                values=["Система", "Светлая", "Тёмная"],
-                command=self._change_appearance,
-                selected_color=ACCENT,
-                selected_hover_color=ACCENT_HOVER,
-                height=34,
-            )
-            self.appearance_menu.set("Система")
-            self.appearance_menu.pack(side="right")
 
             content = ctk.CTkFrame(
                 page,
@@ -859,11 +848,6 @@ def launch_gui(config_path: Path | None = None) -> None:
             except tk.TclError:
                 return "break"
             return "break"
-
-        @staticmethod
-        def _change_appearance(value: str) -> None:
-            modes = {"Система": "system", "Светлая": "light", "Тёмная": "dark"}
-            ctk.set_appearance_mode(modes[value])
 
         def _change_tab(self) -> None:
             selected_tab = self.tabs.get()
