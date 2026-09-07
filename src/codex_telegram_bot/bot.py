@@ -227,6 +227,7 @@ class TelegramCodexBot:
                 "/status",
                 "/cancel",
                 "/diff",
+                "/release",
             }:
                 await self._telegram.send_message(
                     chat_id,
@@ -262,6 +263,8 @@ class TelegramCodexBot:
             await self._cancel_turn(chat_id, command_argument)
         elif command == "/diff":
             await self._send_diff(chat_id, command_argument)
+        elif command == "/release":
+            await self._release_threads(chat_id)
         elif text.startswith("/"):
             await self._telegram.send_message(chat_id, "Неизвестная команда. Используй /help.")
         else:
@@ -405,6 +408,7 @@ class TelegramCodexBot:
             "/status [номер] — показать подробный статус\n"
             "/cancel [номер] — остановить задачу\n"
             "/diff [номер] — показать последний diff задачи\n"
+            "/release — освободить треды для Codex Desktop\n"
             "/help — эта справка\n\n"
             "Обычное или голосовое сообщение отправляется в выбранную задачу. "
             "Если она работает, сообщение уточняет текущий запуск. Иначе Codex "
@@ -643,6 +647,40 @@ class TelegramCodexBot:
             chat_id,
             f"Выбрана задача #{task.number} — {task.title or 'Без названия'}. "
             f"Состояние: {state}.",
+        )
+
+    async def _release_threads(self, chat_id: int) -> None:
+        active_tasks = sorted(
+            self._active_by_task.values(), key=lambda active: active.task_number
+        )
+        if active_tasks:
+            task_numbers = ", ".join(f"#{active.task_number}" for active in active_tasks)
+            await self._telegram.send_message(
+                chat_id,
+                "Сейчас нельзя освободить треды: выполняются задачи "
+                f"{task_numbers}. Дождись завершения или останови их через /cancel.",
+            )
+            return
+
+        try:
+            await self._app_server.restart()
+        except (AppServerError, OSError) as error:
+            LOGGER.exception("Could not restart Codex app-server for thread release")
+            await self._telegram.send_message(
+                chat_id,
+                f"Не удалось освободить треды: {error}. "
+                "Telegram-бот попробует восстановиться автоматически.",
+            )
+            return
+
+        self._thread_statuses.clear()
+        self._available_threads_by_chat.clear()
+        LOGGER.info("Codex app-server restarted; loaded threads released")
+        await self._telegram.send_message(
+            chat_id,
+            "Треды освобождены — теперь их можно открыть в Codex Desktop. "
+            "Сам Telegram-бот продолжает работать. Новое сообщение в Telegram "
+            "снова загрузит выбранный тред.",
         )
 
     async def _send_result(self, chat_id: int, argument: str) -> None:

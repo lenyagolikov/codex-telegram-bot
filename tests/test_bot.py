@@ -84,10 +84,14 @@ class FakeAppServer:
         self.is_healthy = True
         self.responses: dict[str, dict] = {}
         self.requests: list[tuple[str, dict]] = []
+        self.restart_calls = 0
 
     async def request(self, method: str, params: dict) -> dict:
         self.requests.append((method, params))
         return self.responses[method]
+
+    async def restart(self) -> None:
+        self.restart_calls += 1
 
 
 class FakeState:
@@ -343,6 +347,55 @@ def make_bot(
 
 
 class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
+    async def test_release_restarts_app_server_without_active_tasks(self) -> None:
+        telegram = FakeTelegram()
+        app_server = FakeAppServer()
+        bot = make_bot(telegram=telegram, app_server=app_server)
+        bot._thread_statuses[THREAD_ID] = {"type": "idle"}
+
+        await bot._handle_update(
+            {
+                "message": {
+                    "chat": {"id": CHAT_ID, "type": "private"},
+                    "from": {"id": USER_ID},
+                    "message_id": 406,
+                    "text": "/release",
+                }
+            }
+        )
+
+        self.assertEqual(app_server.restart_calls, 1)
+        self.assertEqual(bot._thread_statuses, {})
+        self.assertIn("Треды освобождены", telegram.sent[-1][1])
+
+    async def test_release_is_rejected_while_a_task_is_running(self) -> None:
+        telegram = FakeTelegram()
+        app_server = FakeAppServer()
+        bot = make_bot(telegram=telegram, app_server=app_server)
+        bot._register_active(
+            ActiveTurn(
+                CHAT_ID,
+                THREAD_ID,
+                TURN_ID,
+                task_id=1,
+                task_number=1,
+            )
+        )
+
+        await bot._handle_update(
+            {
+                "message": {
+                    "chat": {"id": CHAT_ID, "type": "private"},
+                    "from": {"id": USER_ID},
+                    "message_id": 407,
+                    "text": "/release",
+                }
+            }
+        )
+
+        self.assertEqual(app_server.restart_calls, 0)
+        self.assertIn("выполняются задачи #1", telegram.sent[-1][1])
+
     async def test_voice_message_is_transcribed_and_submitted_as_prompt(self) -> None:
         telegram = FakeTelegram()
         transcriber = FakeVoiceTranscriber("Проверь изменения в scooters-core")

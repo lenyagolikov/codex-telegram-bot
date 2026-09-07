@@ -36,6 +36,11 @@ class CodexAppServer:
         self._next_request_id = 1
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._write_lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
+        self._generation = 0
+        self._restart_target_generation: int | None = None
+        self._restart_finished = asyncio.Event()
+        self._restart_finished.set()
         self.notification_handler: NotificationHandler | None = None
         self.server_request_handler: ServerRequestHandler | None = None
 
@@ -55,6 +60,7 @@ class CodexAppServer:
             stderr=asyncio.subprocess.PIPE,
             limit=APP_SERVER_STREAM_LIMIT,
         )
+        self._generation += 1
         self._reader_task = asyncio.create_task(self._read_loop(), name="codex-stdout")
         self._stderr_task = asyncio.create_task(self._read_stderr(), name="codex-stderr")
         await self.request(
@@ -84,7 +90,27 @@ class CodexAppServer:
         for task in (self._reader_task, self._stderr_task):
             if task is not None:
                 task.cancel()
+        await asyncio.gather(
+            *(task for task in (self._reader_task, self._stderr_task) if task is not None),
+            return_exceptions=True,
+        )
         self._fail_pending(AppServerError("Codex app-server stopped"))
+
+    async def restart(self) -> None:
+        """Restart only the child app-server while keeping its health watcher alive."""
+        async with self._lifecycle_lock:
+            target_generation = self._generation + 1
+            self._restart_target_generation = target_generation
+            self._restart_finished.clear()
+            try:
+                await self.stop()
+                await self.start()
+            except Exception:
+                await self.stop()
+                raise
+            finally:
+                self._restart_target_generation = None
+                self._restart_finished.set()
 
     @property
     def is_healthy(self) -> bool:
@@ -96,15 +122,35 @@ class CodexAppServer:
         )
 
     async def wait_until_stopped(self) -> None:
-        if self._reader_task is None:
-            raise AppServerError("Codex app-server reader is not running")
-        try:
-            await asyncio.shield(self._reader_task)
-        except asyncio.CancelledError:
-            raise
-        except Exception as error:
-            raise AppServerError("Codex app-server reader stopped") from error
-        raise AppServerError("Codex app-server reader stopped unexpectedly")
+        while True:
+            reader_task = self._reader_task
+            generation = self._generation
+            if reader_task is None:
+                raise AppServerError("Codex app-server reader is not running")
+
+            reader_error: BaseException | None = None
+            try:
+                await asyncio.shield(reader_task)
+            except asyncio.CancelledError as error:
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    raise
+                reader_error = error
+            except Exception as error:
+                reader_error = error
+
+            if self._generation > generation and self.is_healthy:
+                continue
+
+            target_generation = self._restart_target_generation
+            if target_generation is not None and target_generation > generation:
+                await self._restart_finished.wait()
+                if self._generation >= target_generation and self.is_healthy:
+                    continue
+
+            if reader_error is not None:
+                raise AppServerError("Codex app-server reader stopped") from reader_error
+            raise AppServerError("Codex app-server reader stopped unexpectedly")
 
     async def request(self, method: str, params: dict[str, Any]) -> Any:
         request_id = self._next_request_id
