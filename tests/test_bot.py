@@ -615,7 +615,7 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(assessment.reason, "unclassified_command")
         self.assertEqual(assessment.action_types, ("unknown",))
 
-    async def test_submit_prompt_does_not_send_started_acknowledgement(self) -> None:
+    async def test_submit_prompt_sends_started_acknowledgement(self) -> None:
         telegram = FakeTelegram()
         app_server = FakeAppServer()
         app_server.responses.update(
@@ -634,7 +634,10 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
 
         await bot._submit_prompt(CHAT_ID, USER_ID, 303, "Review this change")
 
-        self.assertEqual(telegram.sent, [])
+        self.assertEqual(
+            telegram.sent,
+            [(CHAT_ID, "Взял в работу", None)],
+        )
 
     async def test_does_not_send_commentary_progress(self) -> None:
         telegram = FakeTelegram()

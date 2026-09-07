@@ -1041,6 +1041,7 @@ class TelegramCodexBot:
             thread_id, thread_name = await self._ensure_thread(task)
             await self._ensure_telegram_title(thread_id, thread_name, text)
             await self._telegram.send_typing(chat_id)
+            await self._telegram.send_message(chat_id, "Взял в работу")
             params: dict[str, Any] = {
                 "threadId": thread_id,
                 "input": input_items,
