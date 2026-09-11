@@ -1030,7 +1030,7 @@ def launch_gui(config_path: Path | None = None) -> None:
                 remote = self._remote_service(values)
 
                 def start_remote() -> None:
-                    self.service.stop()
+                    self.service.suspend_for_remote()
                     remote.install_and_start(runtime_values)
 
                 action = start_remote

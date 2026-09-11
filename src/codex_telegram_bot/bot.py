@@ -15,7 +15,7 @@ from .app_server import AppServerError, CodexAppServer
 from .approvals import approval_path, assess_safe_read_only_approval
 from .config import Config
 from .state import OutboxMessage, StateStore, TaskRecord
-from .telegram_api import TelegramApi, TelegramError
+from .telegram_api import TelegramApi, TelegramError, TelegramPollingConflictError
 from .transcription import VoiceTranscriber, VoiceTranscriptionError
 
 LOGGER = logging.getLogger(__name__)
@@ -166,6 +166,9 @@ class TelegramCodexBot:
                     finally:
                         offset = int(update["update_id"]) + 1
                         self._state.set_update_offset(offset)
+            except TelegramPollingConflictError as error:
+                LOGGER.error("%s; stop the duplicate process before retrying", error)
+                await asyncio.sleep(30)
             except TelegramError as error:
                 LOGGER.warning("Telegram polling failed; retrying: %s", error)
                 await asyncio.sleep(3)

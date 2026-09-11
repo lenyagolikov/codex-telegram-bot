@@ -13,6 +13,8 @@ from pathlib import Path
 from .config import APP_NAME, default_log_dir
 
 MACOS_SERVICE_LABEL = "com.lenyagolikov.codex-telegram-bot"
+LEGACY_MACOS_SERVICE_LABELS = ("com.scooters.codex-telegram-bot",)
+LEGACY_LINUX_SERVICE_NAMES = ("scooters-codex-telegram-bot",)
 WINDOWS_TASK_NAME = "Codex Telegram Bot"
 
 
@@ -190,6 +192,23 @@ class ServiceManager:
                 ["systemctl", "--user", "stop", f"{APP_NAME}.service"],
                 check=False,
             )
+
+    def suspend_for_remote(self) -> None:
+        """Disable local pollers before the remote bot starts using the token."""
+        if self.platform == "darwin":
+            domain = f"gui/{os.getuid()}"
+            for label in (MACOS_SERVICE_LABEL, *LEGACY_MACOS_SERVICE_LABELS):
+                target = f"{domain}/{label}"
+                self._run(["launchctl", "disable", target], check=False)
+                self._run(["launchctl", "bootout", target], check=False)
+        elif self.platform == "win32":
+            self.stop()
+        else:
+            for name in (APP_NAME, *LEGACY_LINUX_SERVICE_NAMES):
+                self._run(
+                    ["systemctl", "--user", "disable", "--now", f"{name}.service"],
+                    check=False,
+                )
 
     def restart(self) -> None:
         if self.platform == "darwin":

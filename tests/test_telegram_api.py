@@ -3,10 +3,12 @@ from __future__ import annotations
 import unittest
 from http.client import RemoteDisconnected
 from unittest.mock import AsyncMock, Mock
+from urllib.error import HTTPError
 
 from codex_telegram_bot.telegram_api import (
     TelegramApi,
     TelegramError,
+    TelegramPollingConflictError,
     markdown_to_telegram_html,
 )
 
@@ -53,6 +55,23 @@ class TelegramApiTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with self.assertRaisesRegex(TelegramError, "network error"):
+            api._call_sync("getUpdates", {}, 45)
+
+    def test_get_updates_conflict_reports_duplicate_bot_instance(self) -> None:
+        api = TelegramApi("not-a-real-token")
+        api._open = Mock(  # type: ignore[method-assign]
+            side_effect=HTTPError(
+                "https://api.telegram.org",
+                409,
+                "Conflict",
+                hdrs=None,
+                fp=None,
+            )
+        )
+
+        with self.assertRaisesRegex(
+            TelegramPollingConflictError, "another bot instance"
+        ):
             api._call_sync("getUpdates", {}, 45)
 
     async def test_formatted_message_uses_html_without_link_preview(self) -> None:

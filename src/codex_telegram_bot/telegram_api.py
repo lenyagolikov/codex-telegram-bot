@@ -17,6 +17,10 @@ class TelegramError(RuntimeError):
     pass
 
 
+class TelegramPollingConflictError(TelegramError):
+    pass
+
+
 class _FamilyHTTPSConnection(HTTPSConnection):
     """HTTPS connection restricted to one address family."""
 
@@ -101,6 +105,8 @@ class TelegramApi:
                 return await asyncio.to_thread(
                     self._call_sync, method, payload or {}, timeout
                 )
+            except TelegramPollingConflictError:
+                raise
             except TelegramError as error:
                 last_error = error
                 if attempt < 2:
@@ -119,6 +125,11 @@ class TelegramApi:
             with self._open(request, timeout) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
+            if method == "getUpdates" and error.code == 409:
+                raise TelegramPollingConflictError(
+                    "Telegram getUpdates conflict: another bot instance is running "
+                    "with the same token"
+                ) from error
             raise TelegramError(
                 f"Telegram request {method} failed with HTTP {error.code}"
             ) from error

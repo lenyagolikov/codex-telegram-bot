@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import plistlib
 import tempfile
 import unittest
@@ -7,6 +8,8 @@ from pathlib import Path
 from unittest import mock
 
 from codex_telegram_bot.service import (
+    LEGACY_MACOS_SERVICE_LABELS,
+    MACOS_SERVICE_LABEL,
     ServiceManager,
     linux_unit_text,
     macos_plist_bytes,
@@ -90,6 +93,18 @@ class ServiceDefinitionTests(unittest.TestCase):
         arguments = run.call_args.args[0]
         self.assertEqual(arguments[:2], ["launchctl", "bootout"])
         self.assertEqual(arguments[-1], str(service_path))
+
+    def test_remote_mode_disables_current_and_legacy_macos_pollers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            service = ServiceManager(Path(directory) / ".env", platform="darwin")
+            with mock.patch.object(service, "_run") as run:
+                service.suspend_for_remote()
+
+        commands = [call.args[0] for call in run.call_args_list]
+        for label in (MACOS_SERVICE_LABEL, *LEGACY_MACOS_SERVICE_LABELS):
+            target = f"gui/{os.getuid()}/{label}"
+            self.assertIn(["launchctl", "disable", target], commands)
+            self.assertIn(["launchctl", "bootout", target], commands)
 
     def test_macos_start_bootstraps_stopped_service(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

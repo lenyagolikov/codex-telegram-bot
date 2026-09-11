@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from codex_telegram_bot.remote import (
+    _INSTALL_SCRIPT,
     RemoteServiceManager,
     RemoteSettings,
 )
@@ -42,6 +43,13 @@ class RemoteServiceManagerTests(unittest.TestCase):
                 "REMOTE_INSTALL_DIR": "~/.local/share/bot",
                 "REMOTE_CODEX_CWD": "~/arcadia",
             }
+        )
+
+    def test_remote_install_always_restarts_a_running_service(self) -> None:
+        self.assertNotIn('"enable", "--now"', _INSTALL_SCRIPT)
+        self.assertIn(
+            '["systemctl", "--user", "restart", "codex-telegram-bot.service"]',
+            _INSTALL_SCRIPT,
         )
 
     def test_runtime_archive_contains_importable_package_directory(self) -> None:
