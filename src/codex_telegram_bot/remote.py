@@ -541,7 +541,11 @@ unit_path.write_text(unit, encoding="utf-8")
 unit_path.chmod(0o600)
 subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
 subprocess.run(
-    ["systemctl", "--user", "enable", "--now", "codex-telegram-bot.service"],
+    ["systemctl", "--user", "enable", "codex-telegram-bot.service"],
+    check=True,
+)
+subprocess.run(
+    ["systemctl", "--user", "restart", "codex-telegram-bot.service"],
     check=True,
 )
 print("Удалённый бот установлен и запущен")

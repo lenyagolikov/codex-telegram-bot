@@ -15,7 +15,7 @@ from .app_server import AppServerError, CodexAppServer
 from .approvals import approval_path, assess_safe_read_only_approval
 from .config import Config
 from .state import OutboxMessage, StateStore, TaskRecord
-from .telegram_api import TelegramApi, TelegramError
+from .telegram_api import TelegramApi, TelegramError, TelegramPollingConflictError
 from .transcription import VoiceTranscriber, VoiceTranscriptionError
 
 LOGGER = logging.getLogger(__name__)
@@ -25,7 +25,9 @@ INTERACTION_TIMEOUT_SECONDS = 24 * 60 * 60
 STALLED_TASK_REMINDER_SECONDS = 30 * 60
 STALLED_TASK_CHECK_SECONDS = 60
 AVAILABLE_THREADS_LIMIT = 20
+TELEGRAM_ATTACHMENT_MAX_FILE_BYTES = 20 * 1024 * 1024
 EXTERNAL_THREAD_SOURCE_KINDS = ("cli", "vscode", "exec", "appServer", "unknown")
+SUPPORTED_IMAGE_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 _MCP_FORM_CANCELLED = object()
 _MCP_FORM_SKIPPED = object()
 TELEGRAM_CLIENT_INSTRUCTIONS = """\
@@ -49,6 +51,7 @@ class ActiveTurn:
     started_at: float = field(default_factory=time.monotonic)
     last_activity_at: float = field(default_factory=time.monotonic)
     progress_item_ids: set[str] = field(default_factory=set)
+    attachment_paths: list[Path] = field(default_factory=list)
     reminded_for_activity_at: float | None = None
 
     def touch(self) -> None:
@@ -61,6 +64,13 @@ class AvailableThread:
     thread_id: str
     title: str
     status: str
+
+
+@dataclass(frozen=True, slots=True)
+class TelegramAttachment:
+    path: Path
+    original_name: str
+    is_image: bool
 
 
 @dataclass(slots=True)
@@ -101,6 +111,7 @@ class TelegramCodexBot:
         self._active_by_chat: dict[int, ActiveTurn] = {}
         self._active_by_turn: dict[str, ActiveTurn] = {}
         self._completed_before_start_response: set[str] = set()
+        self._pending_attachment_paths_by_task: dict[int, list[Path]] = {}
         self._thread_statuses: dict[str, dict[str, Any]] = {}
         self._pending_callbacks: dict[str, PendingCallback] = {}
         self._pending_text_by_chat: dict[int, list[PendingTextInput]] = {}
@@ -132,6 +143,7 @@ class TelegramCodexBot:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            self._cleanup_all_attachments()
             await self._app_server.stop()
             self._state.close()
 
@@ -154,6 +166,9 @@ class TelegramCodexBot:
                     finally:
                         offset = int(update["update_id"]) + 1
                         self._state.set_update_offset(offset)
+            except TelegramPollingConflictError as error:
+                LOGGER.error("%s; stop the duplicate process before retrying", error)
+                await asyncio.sleep(30)
             except TelegramError as error:
                 LOGGER.warning("Telegram polling failed; retrying: %s", error)
                 await asyncio.sleep(3)
@@ -176,7 +191,20 @@ class TelegramCodexBot:
         if not await self._authorize(chat_id, user_id):
             return
 
-        if voice := message.get("voice"):
+        attachment: TelegramAttachment | None = None
+        has_attachment = bool(message.get("photo") or message.get("document"))
+        if has_attachment:
+            attachment = await self._download_message_attachment(chat_id, message)
+            if attachment is None:
+                return
+            text = str(message.get("caption") or "").strip()
+            if not text:
+                text = (
+                    "Проанализируй прикреплённое изображение."
+                    if attachment.is_image
+                    else f"Изучи прикреплённый файл «{attachment.original_name}»."
+                )
+        elif voice := message.get("voice"):
             text = await self._transcribe_voice_message(chat_id, voice)
             if text is None:
                 return
@@ -185,11 +213,19 @@ class TelegramCodexBot:
         else:
             return
         command_parts = text.split(maxsplit=1)
-        command = command_parts[0].split("@", 1)[0].lower()
+        command = (
+            ""
+            if attachment is not None
+            else command_parts[0].split("@", 1)[0].lower()
+        )
         command_argument = command_parts[1].strip() if len(command_parts) > 1 else ""
         message_type = command if command.startswith("/") else "prompt"
         LOGGER.info("Handling Telegram message type=%s", message_type)
-        pending_input = self._pending_text_input_for_message(chat_id, message)
+        pending_input = (
+            None
+            if attachment is not None
+            else self._pending_text_input_for_message(chat_id, message)
+        )
         if pending_input is not None:
             if command == "/cancel" and not command_argument:
                 self._resolve_pending_text(pending_input, None)
@@ -265,10 +301,104 @@ class TelegramCodexBot:
             await self._send_diff(chat_id, command_argument)
         elif command == "/release":
             await self._release_threads(chat_id)
-        elif text.startswith("/"):
+        elif attachment is None and text.startswith("/"):
             await self._telegram.send_message(chat_id, "Неизвестная команда. Используй /help.")
         else:
-            await self._submit_prompt(chat_id, user_id, int(message["message_id"]), text)
+            input_items = self._attachment_input_items(text, attachment)
+            await self._submit_prompt(
+                chat_id,
+                user_id,
+                int(message["message_id"]),
+                text,
+                input_items=input_items,
+                attachment_paths=(attachment.path,) if attachment is not None else (),
+            )
+
+    async def _download_message_attachment(
+        self, chat_id: int, message: dict[str, Any]
+    ) -> TelegramAttachment | None:
+        photo_sizes = message.get("photo") or []
+        if photo_sizes:
+            metadata = photo_sizes[-1]
+            original_name = "telegram-photo.jpg"
+            suffix = ".jpg"
+            is_image = True
+        else:
+            metadata = message.get("document") or {}
+            original_name = _safe_attachment_name(
+                str(metadata.get("file_name") or "telegram-file")
+            )
+            suffix = _safe_attachment_suffix(original_name)
+            mime_type = str(metadata.get("mime_type") or "").lower()
+            is_image = mime_type in SUPPORTED_IMAGE_MIME_TYPES or suffix in {
+                ".jpeg",
+                ".jpg",
+                ".png",
+                ".webp",
+            }
+            if is_image and suffix == ".bin":
+                suffix = {
+                    "image/jpeg": ".jpg",
+                    "image/png": ".png",
+                    "image/webp": ".webp",
+                }[mime_type]
+
+        file_id = str(metadata.get("file_id") or "")
+        if not file_id:
+            await self._telegram.send_message(
+                chat_id, "Telegram не передал идентификатор вложения."
+            )
+            return None
+        file_size = int(metadata.get("file_size") or 0)
+        if file_size > TELEGRAM_ATTACHMENT_MAX_FILE_BYTES:
+            await self._telegram.send_message(
+                chat_id, "Файл слишком большой. Максимальный размер — 20 МБ."
+            )
+            return None
+
+        attachment_dir = Path(tempfile.mkdtemp(prefix="codex-telegram-attachment-"))
+        attachment_dir.chmod(0o700)
+        attachment_path = attachment_dir / f"attachment{suffix}"
+        try:
+            await self._telegram.send_typing(chat_id)
+            await self._telegram.download_file(
+                file_id,
+                attachment_path,
+                max_bytes=TELEGRAM_ATTACHMENT_MAX_FILE_BYTES,
+            )
+            attachment_path.chmod(0o600)
+        except TelegramError:
+            LOGGER.exception("Telegram attachment download failed")
+            _cleanup_attachment_paths((attachment_path,))
+            await self._telegram.send_message(
+                chat_id, "Не удалось скачать вложение. Попробуй отправить его ещё раз."
+            )
+            return None
+
+        LOGGER.info(
+            "Telegram attachment downloaded; kind=%s size_bytes=%d",
+            "image" if is_image else "file",
+            attachment_path.stat().st_size,
+        )
+        return TelegramAttachment(attachment_path, original_name, is_image)
+
+    @staticmethod
+    def _attachment_input_items(
+        text: str, attachment: TelegramAttachment | None
+    ) -> list[dict[str, Any]]:
+        if attachment is None:
+            return [{"type": "text", "text": text}]
+        if attachment.is_image:
+            return [
+                {"type": "text", "text": text},
+                {"type": "localImage", "path": str(attachment.path)},
+            ]
+        file_instructions = (
+            f"{text}\n\nПрикреплённый файл «{attachment.original_name}» сохранён "
+            f"по локальному пути `{attachment.path}`. Прочитай его с помощью "
+            "доступных инструментов перед ответом."
+        )
+        return [{"type": "text", "text": file_instructions}]
 
     async def _transcribe_voice_message(
         self, chat_id: int, voice: dict[str, Any]
@@ -410,8 +540,9 @@ class TelegramCodexBot:
             "/diff [номер] — показать последний diff задачи\n"
             "/release — освободить треды для Codex Desktop\n"
             "/help — эта справка\n\n"
-            "Обычное или голосовое сообщение отправляется в выбранную задачу. "
-            "Если она работает, сообщение уточняет текущий запуск. Иначе Codex "
+            "Текст, голосовое сообщение, изображение или файл отправляется в "
+            "выбранную задачу. Подпись к вложению используется как промпт. Если "
+            "задача работает, сообщение уточняет текущий запуск. Иначе Codex "
             "продолжает тот же диалог новым запуском.",
         )
 
@@ -1013,7 +1144,14 @@ class TelegramCodexBot:
         return task
 
     async def _submit_prompt(
-        self, chat_id: int, user_id: int, message_id: int, text: str
+        self,
+        chat_id: int,
+        user_id: int,
+        message_id: int,
+        text: str,
+        *,
+        input_items: list[dict[str, Any]] | None = None,
+        attachment_paths: tuple[Path, ...] = (),
     ) -> None:
         task = self._state.get_selected_task(chat_id)
         if task is None:
@@ -1022,16 +1160,19 @@ class TelegramCodexBot:
             self._state.set_task_title(task.id, _title_from_prompt(text))
             task = self._state.get_task_by_id(task.id) or task
         active = self._active_by_task.get(task.id)
-        input_items = [{"type": "text", "text": text}]
+        turn_input = input_items or [{"type": "text", "text": text}]
+        attachments_owned_by_turn = False
         try:
             if active is not None:
                 active.touch()
+                active.attachment_paths.extend(attachment_paths)
+                attachments_owned_by_turn = bool(attachment_paths)
                 await self._app_server.request(
                     "turn/steer",
                     {
                         "threadId": active.thread_id,
                         "expectedTurnId": active.turn_id,
-                        "input": input_items,
+                        "input": turn_input,
                         "clientUserMessageId": f"telegram:{chat_id}:{message_id}",
                     },
                 )
@@ -1044,13 +1185,18 @@ class TelegramCodexBot:
             await self._telegram.send_message(chat_id, "Взял в работу")
             params: dict[str, Any] = {
                 "threadId": thread_id,
-                "input": input_items,
+                "input": turn_input,
                 "clientUserMessageId": f"telegram:{chat_id}:{message_id}",
                 "cwd": str(self._config.codex_cwd),
                 "sandboxPolicy": self._turn_sandbox_policy(),
             }
             if self._config.reasoning_effort is not None:
                 params["effort"] = self._config.reasoning_effort
+            if attachment_paths:
+                self._pending_attachment_paths_by_task[task.id] = list(
+                    attachment_paths
+                )
+                attachments_owned_by_turn = True
             response = await self._app_server.request("turn/start", params)
             turn_id = str(response["turn"]["id"])
             if turn_id in self._completed_before_start_response:
@@ -1069,8 +1215,24 @@ class TelegramCodexBot:
             self._state.set_task_running(task.id, turn_id)
             self._thread_statuses[thread_id] = {"type": "active", "activeFlags": []}
         except AppServerError as error:
+            pending_paths = self._pending_attachment_paths_by_task.pop(task.id, [])
+            if pending_paths:
+                _cleanup_attachment_paths(pending_paths)
+            elif active is not None and attachment_paths:
+                for path in attachment_paths:
+                    with suppress(ValueError):
+                        active.attachment_paths.remove(path)
+                _cleanup_attachment_paths(attachment_paths)
+            attachments_owned_by_turn = False
             LOGGER.exception("Failed to submit a prompt")
             await self._telegram.send_message(chat_id, f"Codex не принял задачу: {error}")
+        except TelegramError:
+            if not attachments_owned_by_turn:
+                _cleanup_attachment_paths(attachment_paths)
+            raise
+        finally:
+            if attachment_paths and not attachments_owned_by_turn:
+                _cleanup_attachment_paths(attachment_paths)
 
     async def _ensure_thread(self, task: TaskRecord) -> tuple[str, str | None]:
         stored_thread_id = task.thread_id
@@ -1216,6 +1378,9 @@ class TelegramCodexBot:
                 task_id=task.id,
                 task_number=task.number,
             )
+            active.attachment_paths.extend(
+                self._pending_attachment_paths_by_task.pop(task.id, [])
+            )
             self._completed_before_start_response.add(turn_id)
 
         status = str(turn["status"])
@@ -1360,6 +1525,9 @@ class TelegramCodexBot:
             if task is not None:
                 active.task_id = task.id
                 active.task_number = task.number
+        active.attachment_paths.extend(
+            self._pending_attachment_paths_by_task.pop(active.task_id, [])
+        )
         self._active_by_task[active.task_id] = active
         self._active_by_chat[active.chat_id] = active
         self._active_by_turn[active.turn_id] = active
@@ -1369,6 +1537,20 @@ class TelegramCodexBot:
         if self._active_by_chat.get(active.chat_id) is active:
             self._active_by_chat.pop(active.chat_id, None)
         self._active_by_turn.pop(active.turn_id, None)
+        _cleanup_attachment_paths(active.attachment_paths)
+        active.attachment_paths.clear()
+
+    def _cleanup_all_attachments(self) -> None:
+        seen: set[int] = set()
+        for active in self._active_by_turn.values():
+            if id(active) in seen:
+                continue
+            seen.add(id(active))
+            _cleanup_attachment_paths(active.attachment_paths)
+            active.attachment_paths.clear()
+        for paths in self._pending_attachment_paths_by_task.values():
+            _cleanup_attachment_paths(paths)
+        self._pending_attachment_paths_by_task.clear()
 
     async def _handle_codex_request(self, method: str, params: dict[str, Any]) -> Any:
         if method in {
@@ -2199,6 +2381,32 @@ def _parse_mcp_form_value(raw_value: str, details: dict[str, Any]) -> Any:
             )
         return [by_label[part.casefold()] for part in parts]
     return raw_value
+
+
+def _safe_attachment_name(value: str) -> str:
+    name = Path(value).name.strip()
+    name = "".join(character for character in name if character.isprintable())
+    return name[:200] or "telegram-file"
+
+
+def _safe_attachment_suffix(name: str) -> str:
+    suffix = Path(name).suffix.lower()
+    if 1 < len(suffix) <= 12 and suffix[1:].isalnum():
+        return suffix
+    return ".bin"
+
+
+def _cleanup_attachment_paths(paths: tuple[Path, ...] | list[Path]) -> None:
+    for raw_path in paths:
+        path = Path(raw_path)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            LOGGER.warning("Could not remove a temporary Telegram attachment")
+        parent = path.parent
+        if parent.name.startswith("codex-telegram-attachment-"):
+            with suppress(OSError):
+                parent.rmdir()
 
 
 def _pluralize_questions(count: int) -> str:
