@@ -477,6 +477,184 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(transcriber.paths, [])
         self.assertIn("слишком длинное", telegram.sent[-1][1])
 
+    async def test_photo_is_submitted_as_local_image_and_removed_after_turn(self) -> None:
+        telegram = FakeTelegram()
+        app_server = FakeAppServer()
+        app_server.responses.update(
+            {
+                "thread/resume": {
+                    "thread": {
+                        "id": THREAD_ID,
+                        "name": "[Telegram] Review",
+                        "status": {"type": "idle"},
+                    }
+                },
+                "turn/start": {"turn": {"id": TURN_ID}},
+            }
+        )
+        bot = make_bot(telegram=telegram, app_server=app_server)
+
+        await bot._handle_update(
+            {
+                "message": {
+                    "chat": {"id": CHAT_ID, "type": "private"},
+                    "from": {"id": USER_ID},
+                    "message_id": 408,
+                    "caption": "/review Что сломалось на скриншоте?",
+                    "photo": [
+                        {"file_id": "small-photo", "file_size": 100},
+                        {"file_id": "large-photo", "file_size": 1000},
+                    ],
+                }
+            }
+        )
+
+        self.assertEqual(telegram.downloads[0][0], "large-photo")
+        turn_start = next(
+            params for method, params in app_server.requests if method == "turn/start"
+        )
+        self.assertEqual(
+            turn_start["input"][0]["text"],
+            "/review Что сломалось на скриншоте?",
+        )
+        self.assertEqual(turn_start["input"][1]["type"], "localImage")
+        image_path = Path(turn_start["input"][1]["path"])
+        self.assertTrue(image_path.exists())
+
+        await bot._handle_turn_completed(
+            {
+                "threadId": THREAD_ID,
+                "turn": {
+                    "id": TURN_ID,
+                    "status": "completed",
+                    "items": [
+                        {
+                            "id": "answer-1",
+                            "type": "agentMessage",
+                            "phase": "final_answer",
+                            "text": "Нашла ошибку.",
+                        }
+                    ],
+                },
+            }
+        )
+
+        self.assertFalse(image_path.exists())
+        self.assertFalse(image_path.parent.exists())
+
+    async def test_image_document_is_submitted_as_local_image(self) -> None:
+        telegram = FakeTelegram()
+        app_server = FakeAppServer()
+        app_server.responses.update(
+            {
+                "thread/resume": {
+                    "thread": {
+                        "id": THREAD_ID,
+                        "name": "[Telegram] Review",
+                        "status": {"type": "idle"},
+                    }
+                },
+                "turn/start": {"turn": {"id": TURN_ID}},
+            }
+        )
+        bot = make_bot(telegram=telegram, app_server=app_server)
+
+        await bot._handle_update(
+            {
+                "message": {
+                    "chat": {"id": CHAT_ID, "type": "private"},
+                    "from": {"id": USER_ID},
+                    "message_id": 409,
+                    "document": {
+                        "file_id": "screenshot-file",
+                        "file_name": "screen.png",
+                        "mime_type": "image/png",
+                        "file_size": 2048,
+                    },
+                }
+            }
+        )
+
+        turn_start = next(
+            params for method, params in app_server.requests if method == "turn/start"
+        )
+        self.assertEqual(
+            turn_start["input"][0]["text"],
+            "Проанализируй прикреплённое изображение.",
+        )
+        self.assertEqual(turn_start["input"][1]["type"], "localImage")
+        self.assertTrue(turn_start["input"][1]["path"].endswith(".png"))
+        bot._cleanup_all_attachments()
+
+    async def test_document_path_is_added_to_prompt(self) -> None:
+        telegram = FakeTelegram()
+        app_server = FakeAppServer()
+        app_server.responses.update(
+            {
+                "thread/resume": {
+                    "thread": {
+                        "id": THREAD_ID,
+                        "name": "[Telegram] Review",
+                        "status": {"type": "idle"},
+                    }
+                },
+                "turn/start": {"turn": {"id": TURN_ID}},
+            }
+        )
+        bot = make_bot(telegram=telegram, app_server=app_server)
+
+        await bot._handle_update(
+            {
+                "message": {
+                    "chat": {"id": CHAT_ID, "type": "private"},
+                    "from": {"id": USER_ID},
+                    "message_id": 410,
+                    "caption": "Проверь этот отчёт",
+                    "document": {
+                        "file_id": "report-file",
+                        "file_name": "report.txt",
+                        "mime_type": "text/plain",
+                        "file_size": 2048,
+                    },
+                }
+            }
+        )
+
+        turn_start = next(
+            params for method, params in app_server.requests if method == "turn/start"
+        )
+        self.assertEqual(len(turn_start["input"]), 1)
+        prompt = turn_start["input"][0]["text"]
+        self.assertIn("Проверь этот отчёт", prompt)
+        self.assertIn("report.txt", prompt)
+        attachment_path = Path(prompt.split("`")[1])
+        self.assertEqual(attachment_path.suffix, ".txt")
+        self.assertTrue(attachment_path.exists())
+        bot._cleanup_all_attachments()
+
+    async def test_oversized_document_is_rejected_before_download(self) -> None:
+        telegram = FakeTelegram()
+        bot = make_bot(telegram=telegram)
+
+        await bot._handle_update(
+            {
+                "message": {
+                    "chat": {"id": CHAT_ID, "type": "private"},
+                    "from": {"id": USER_ID},
+                    "message_id": 411,
+                    "document": {
+                        "file_id": "large-file",
+                        "file_name": "large.zip",
+                        "mime_type": "application/zip",
+                        "file_size": 21 * 1024 * 1024,
+                    },
+                }
+            }
+        )
+
+        self.assertEqual(telegram.downloads, [])
+        self.assertIn("Максимальный размер — 20 МБ", telegram.sent[-1][1])
+
     async def test_safe_read_only_command_is_auto_approved(self) -> None:
         telegram = FakeTelegram()
         bot = make_bot(telegram=telegram, auto_approve=True)

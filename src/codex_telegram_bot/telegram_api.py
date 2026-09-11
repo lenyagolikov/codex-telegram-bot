@@ -223,7 +223,7 @@ class TelegramApi:
                 while chunk := response.read(64 * 1024):
                     total_bytes += len(chunk)
                     if total_bytes > max_bytes:
-                        raise TelegramError("Telegram voice message is too large")
+                        raise TelegramError("Telegram file is too large")
                     output.write(chunk)
         except HTTPError as error:
             raise TelegramError(
