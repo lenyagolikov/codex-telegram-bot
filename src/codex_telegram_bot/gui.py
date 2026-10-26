@@ -101,6 +101,23 @@ def _run_mode_for_tab(tab_name: str, current_mode: str) -> str:
     return current_mode if current_mode in {"local", "remote"} else "local"
 
 
+def _start_service_for_mode(
+    run_mode: str,
+    local_service: ServiceManager,
+    config: Config,
+    runtime_values: dict[str, str],
+    remote_service: RemoteServiceManager | None = None,
+) -> None:
+    if run_mode == "local":
+        local_service.install_and_start(config.codex_cwd, config.codex_bin)
+        return
+    if run_mode == "remote" and remote_service is not None:
+        local_service.suspend_for_remote()
+        remote_service.install_and_start(runtime_values)
+        return
+    raise ValueError(f"Unsupported run mode: {run_mode}")
+
+
 def _shortcut_action(keysym: str, keycode: int, platform: str) -> str | None:
     actions = {
         "a": "select_all",
@@ -1030,16 +1047,25 @@ def launch_gui(config_path: Path | None = None) -> None:
                 remote = self._remote_service(values)
 
                 def start_remote() -> None:
-                    self.service.suspend_for_remote()
-                    remote.install_and_start(runtime_values)
+                    _start_service_for_mode(
+                        "remote",
+                        self.service,
+                        config,
+                        runtime_values,
+                        remote,
+                    )
 
                 action = start_remote
                 message = "Бот развёрнут и запущен на удалённом сервере."
             else:
 
                 def start_local() -> None:
-                    self._stop_configured_remote(values)
-                    self.service.install_and_start(config.codex_cwd, config.codex_bin)
+                    _start_service_for_mode(
+                        "local",
+                        self.service,
+                        config,
+                        runtime_values,
+                    )
 
                 action = start_local
                 message = "Локальный фоновый процесс установлен и запущен."
@@ -1163,11 +1189,6 @@ def launch_gui(config_path: Path | None = None) -> None:
         @staticmethod
         def _remote_service(values: dict[str, str]) -> RemoteServiceManager:
             return RemoteServiceManager(RemoteSettings.from_mapping(values))
-
-        def _stop_configured_remote(self, values: dict[str, str]) -> None:
-            if not values.get("REMOTE_SSH_HOST", "").strip():
-                return
-            self._remote_service(values).stop()
 
         def _run_service_action(
             self, action: Callable[[], None], success_message: str

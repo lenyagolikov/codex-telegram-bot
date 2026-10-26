@@ -19,6 +19,7 @@ from codex_telegram_bot.gui import (
     _run_mode_for_tab,
     _set_macos_application_icon,
     _shortcut_action,
+    _start_service_for_mode,
 )
 
 
@@ -58,6 +59,44 @@ class RunModeTests(unittest.TestCase):
 
     def test_invalid_saved_mode_falls_back_to_local(self) -> None:
         self.assertEqual(_run_mode_for_tab(GENERAL_TAB, "invalid"), "local")
+
+    def test_local_start_does_not_contact_remote_service(self) -> None:
+        local_service = Mock()
+        remote_service = Mock()
+        config = Mock(codex_cwd=Path("/tmp/workspace"), codex_bin="codex")
+
+        _start_service_for_mode(
+            "local",
+            local_service,
+            config,
+            {"TELEGRAM_BOT_TOKEN": "unused-in-test"},
+            remote_service,
+        )
+
+        local_service.install_and_start.assert_called_once_with(
+            Path("/tmp/workspace"), "codex"
+        )
+        local_service.suspend_for_remote.assert_not_called()
+        remote_service.assert_not_called()
+        remote_service.install_and_start.assert_not_called()
+
+    def test_remote_start_suspends_local_service(self) -> None:
+        local_service = Mock()
+        remote_service = Mock()
+        config = Mock(codex_cwd=Path("/tmp/workspace"), codex_bin="codex")
+        runtime_values = {"TELEGRAM_BOT_TOKEN": "unused-in-test"}
+
+        _start_service_for_mode(
+            "remote",
+            local_service,
+            config,
+            runtime_values,
+            remote_service,
+        )
+
+        local_service.suspend_for_remote.assert_called_once_with()
+        local_service.install_and_start.assert_not_called()
+        remote_service.install_and_start.assert_called_once_with(runtime_values)
 
 
 class MacosApplicationIconTests(unittest.TestCase):
