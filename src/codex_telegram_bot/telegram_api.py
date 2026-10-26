@@ -6,6 +6,8 @@ import mimetypes
 import re
 import secrets
 import socket
+import ssl
+from functools import lru_cache
 from html import escape
 from http.client import HTTPException, HTTPSConnection
 from pathlib import Path
@@ -14,6 +16,8 @@ from urllib.error import HTTPError
 from urllib.parse import urlparse
 from urllib.request import HTTPSHandler, Request, build_opener
 
+import certifi
+
 
 class TelegramError(RuntimeError):
     pass
@@ -21,6 +25,42 @@ class TelegramError(RuntimeError):
 
 class TelegramPollingConflictError(TelegramError):
     pass
+
+
+@lru_cache(maxsize=1)
+def _telegram_ssl_context() -> ssl.SSLContext:
+    """Use a CA bundle that is also available inside packaged applications."""
+    return ssl.create_default_context(cafile=certifi.where())
+
+
+def _safe_network_error_detail(error: BaseException) -> str:
+    """Return a useful error category without leaking request URLs or tokens."""
+    current: BaseException | None = error
+    visited: set[int] = set()
+    deepest = error
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        deepest = current
+        if isinstance(current, ssl.SSLCertVerificationError):
+            return "TLS certificate verification failed"
+        if isinstance(current, ssl.SSLError):
+            return "TLS handshake failed"
+        if isinstance(current, socket.gaierror):
+            return "DNS resolution failed"
+        if isinstance(current, (TimeoutError, socket.timeout)):
+            return "connection timed out"
+        if isinstance(current, ConnectionRefusedError):
+            return "connection refused"
+        reason = getattr(current, "reason", None)
+        if isinstance(reason, BaseException):
+            current = reason
+        else:
+            current = current.__cause__ or current.__context__
+    return type(deepest).__name__
+
+
+def _network_error_message(prefix: str, error: BaseException) -> str:
+    return f"{prefix}: network error ({_safe_network_error_detail(error)})"
 
 
 class _FamilyHTTPSConnection(HTTPSConnection):
@@ -136,7 +176,9 @@ class TelegramApi:
                 f"Telegram request {method} failed with HTTP {error.code}"
             ) from error
         except (HTTPException, OSError) as error:
-            raise TelegramError(f"Telegram request {method} failed: network error") from error
+            raise TelegramError(
+                _network_error_message(f"Telegram request {method} failed", error)
+            ) from error
 
         if not body.get("ok"):
             description = body.get("description", "unknown Telegram error")
@@ -144,12 +186,13 @@ class TelegramApi:
         return body.get("result")
 
     def _open(self, request: Request, timeout: int) -> Any:
+        context = _telegram_ssl_context()
         if self._ip_family == "ipv4":
-            opener = build_opener(_IPv4HTTPSHandler())
+            opener = build_opener(_IPv4HTTPSHandler(context=context))
         elif self._ip_family == "ipv6":
-            opener = build_opener(_IPv6HTTPSHandler())
+            opener = build_opener(_IPv6HTTPSHandler(context=context))
         else:
-            opener = build_opener()
+            opener = build_opener(HTTPSHandler(context=context))
         return opener.open(request, timeout=timeout)
 
     async def get_updates(self, offset: int | None, poll_timeout: int) -> list[dict[str, Any]]:
@@ -260,7 +303,7 @@ class TelegramApi:
             ) from error
         except (HTTPException, OSError, ValueError) as error:
             raise TelegramError(
-                f"Telegram request {method} failed: network error"
+                _network_error_message(f"Telegram request {method} failed", error)
             ) from error
 
         if not body.get("ok"):
@@ -327,7 +370,9 @@ class TelegramApi:
                 f"Telegram file download failed with HTTP {error.code}"
             ) from error
         except (HTTPException, OSError) as error:
-            raise TelegramError("Telegram file download failed: network error") from error
+            raise TelegramError(
+                _network_error_message("Telegram file download failed", error)
+            ) from error
 
 
 def split_message(text: str, limit: int = 3900) -> list[str]:

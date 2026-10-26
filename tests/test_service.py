@@ -10,6 +10,7 @@ from unittest import mock
 from codex_telegram_bot.service import (
     LEGACY_MACOS_SERVICE_LABELS,
     MACOS_SERVICE_LABEL,
+    ServiceError,
     ServiceManager,
     linux_unit_text,
     macos_plist_bytes,
@@ -147,6 +148,44 @@ class ServiceDefinitionTests(unittest.TestCase):
         commands = [call.args[0] for call in run.call_args_list]
         self.assertEqual(commands[-2][:2], ["launchctl", "enable"])
         self.assertEqual(commands[-1][:2], ["launchctl", "bootstrap"])
+
+    def test_macos_install_rejects_app_translocation_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = ServiceManager(
+                root / ".env",
+                command=(
+                    "/private/var/folders/example/AppTranslocation/UUID/d/"
+                    "CodexTelegramBot.app/Contents/MacOS/CodexTelegramBot",
+                ),
+                platform="darwin",
+                log_dir=root / "logs",
+            )
+
+            with self.assertRaisesRegex(ServiceError, "Applications"):
+                service.install(root)
+
+    def test_macos_install_accepts_application_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = ServiceManager(
+                root / ".env",
+                command=(
+                    "/Applications/CodexTelegramBot.app/Contents/MacOS/"
+                    "CodexTelegramBot",
+                ),
+                platform="darwin",
+                log_dir=root / "logs",
+            )
+            with (
+                mock.patch.object(
+                    service,
+                    "_macos_service_path",
+                    return_value=root / "agent.plist",
+                ),
+                mock.patch.object(service, "_run"),
+            ):
+                service.install(root)
 
     def test_windows_status_distinguishes_missing_task(self) -> None:
         service = ServiceManager(Path("settings.env"), platform="win32")

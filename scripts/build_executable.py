@@ -84,6 +84,7 @@ def main() -> None:
         f"--icon={icon_path}",
         f"--add-data={icon_path}:codex_telegram_bot/assets",
         f"--add-data={package_path}:remote_runtime/codex_telegram_bot",
+        "--collect-all=certifi",
         "--collect-all=customtkinter",
         "--collect-submodules=keyring.backends",
     ]

@@ -16,6 +16,7 @@ MACOS_SERVICE_LABEL = "com.lenyagolikov.codex-telegram-bot"
 LEGACY_MACOS_SERVICE_LABELS = ("com.scooters.codex-telegram-bot",)
 LEGACY_LINUX_SERVICE_NAMES = ("scooters-codex-telegram-bot",)
 WINDOWS_TASK_NAME = "Codex Telegram Bot"
+MACOS_APP_TRANSLOCATION_MARKER = "/AppTranslocation/"
 
 
 class ServiceError(RuntimeError):
@@ -151,6 +152,7 @@ class ServiceManager:
         environment_path = service_environment_path(codex_bin)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         if self.platform == "darwin":
+            self._validate_macos_command_location()
             self._install_macos(working_directory, environment_path)
         elif self.platform == "win32":
             self._install_windows()
@@ -336,6 +338,16 @@ class ServiceManager:
             service_path.chmod(0o600)
         self._run(["launchctl", "enable", target])
         self._run(["launchctl", "bootstrap", domain, str(service_path)])
+
+    def _validate_macos_command_location(self) -> None:
+        executable = str(Path(self.command[0]).expanduser().absolute())
+        if MACOS_APP_TRANSLOCATION_MARKER not in executable:
+            return
+        raise ServiceError(
+            "macOS запустила приложение из временной папки App Translocation. "
+            "Переместите CodexTelegramBot.app в папку Программы (Applications), "
+            "откройте его оттуда и повторите запуск."
+        )
 
     def _install_windows(self) -> None:
         task_command = subprocess.list2cmdline(

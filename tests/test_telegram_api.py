@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ssl
 import tempfile
 import unittest
 from http.client import RemoteDisconnected
@@ -11,6 +12,8 @@ from codex_telegram_bot.telegram_api import (
     TelegramApi,
     TelegramError,
     TelegramPollingConflictError,
+    _safe_network_error_detail,
+    _telegram_ssl_context,
     markdown_to_telegram_html,
 )
 
@@ -50,6 +53,38 @@ class MarkdownToTelegramHtmlTests(unittest.TestCase):
 
 
 class TelegramApiTests(unittest.IsolatedAsyncioTestCase):
+    def tearDown(self) -> None:
+        _telegram_ssl_context.cache_clear()
+
+    def test_ssl_context_uses_packaged_certifi_bundle(self) -> None:
+        context = Mock()
+        with (
+            unittest.mock.patch(
+                "codex_telegram_bot.telegram_api.certifi.where",
+                return_value="/bundle/cacert.pem",
+            ),
+            unittest.mock.patch(
+                "codex_telegram_bot.telegram_api.ssl.create_default_context",
+                return_value=context,
+            ) as create_context,
+        ):
+            _telegram_ssl_context.cache_clear()
+            result = _telegram_ssl_context()
+
+        self.assertIs(result, context)
+        create_context.assert_called_once_with(cafile="/bundle/cacert.pem")
+
+    def test_tls_error_detail_does_not_include_sensitive_exception_text(self) -> None:
+        error = ssl.SSLCertVerificationError(
+            1,
+            "certificate failed for https://api.telegram.org/bot-secret-token",
+        )
+
+        detail = _safe_network_error_detail(error)
+
+        self.assertEqual(detail, "TLS certificate verification failed")
+        self.assertNotIn("secret-token", detail)
+
     def test_remote_disconnect_is_reported_as_retryable_telegram_error(self) -> None:
         api = TelegramApi("not-a-real-token")
         api._open = Mock(  # type: ignore[method-assign]
