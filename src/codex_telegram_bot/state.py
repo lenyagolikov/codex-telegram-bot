@@ -12,6 +12,9 @@ class OutboxMessage:
     text: str
     formatted: bool
     attempts: int
+    kind: str = "message"
+    file_path: str | None = None
+    file_mode: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,11 +67,15 @@ class StateStore:
                 text TEXT NOT NULL,
                 formatted INTEGER NOT NULL DEFAULT 0,
                 attempts INTEGER NOT NULL DEFAULT 0,
+                kind TEXT NOT NULL DEFAULT 'message',
+                file_path TEXT,
+                file_mode TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 last_attempt_at TEXT
             )
             """
         )
+        self._ensure_outbox_columns()
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS tasks (
@@ -110,6 +117,20 @@ class StateStore:
         }
         if "archived_at" not in columns:
             self._connection.execute("ALTER TABLE tasks ADD COLUMN archived_at TEXT")
+
+    def _ensure_outbox_columns(self) -> None:
+        columns = {
+            str(row[1])
+            for row in self._connection.execute("PRAGMA table_info(outbox)").fetchall()
+        }
+        if "kind" not in columns:
+            self._connection.execute(
+                "ALTER TABLE outbox ADD COLUMN kind TEXT NOT NULL DEFAULT 'message'"
+            )
+        if "file_path" not in columns:
+            self._connection.execute("ALTER TABLE outbox ADD COLUMN file_path TEXT")
+        if "file_mode" not in columns:
+            self._connection.execute("ALTER TABLE outbox ADD COLUMN file_mode TEXT")
 
     def _migrate_legacy_chats(self) -> None:
         rows = self._connection.execute(
@@ -472,10 +493,32 @@ class StateStore:
         assert cursor.lastrowid is not None
         return int(cursor.lastrowid)
 
+    def enqueue_outbox_file(
+        self,
+        chat_id: int,
+        path: Path,
+        *,
+        caption: str,
+        mode: str,
+    ) -> int:
+        cursor = self._connection.execute(
+            """
+            INSERT INTO outbox (
+                chat_id, text, formatted, kind, file_path, file_mode
+            )
+            VALUES (?, ?, 0, 'file', ?, ?)
+            """,
+            (chat_id, caption, str(path), mode),
+        )
+        self._connection.commit()
+        assert cursor.lastrowid is not None
+        return int(cursor.lastrowid)
+
     def get_outbox(self, limit: int = 20) -> list[OutboxMessage]:
         rows = self._connection.execute(
             """
-            SELECT id, chat_id, text, formatted, attempts
+            SELECT id, chat_id, text, formatted, attempts,
+                   kind, file_path, file_mode
             FROM outbox
             ORDER BY id
             LIMIT ?
@@ -489,6 +532,9 @@ class StateStore:
                 text=str(row[2]),
                 formatted=bool(row[3]),
                 attempts=int(row[4]),
+                kind=str(row[5]),
+                file_path=str(row[6]) if row[6] is not None else None,
+                file_mode=str(row[7]) if row[7] is not None else None,
             )
             for row in rows
         ]

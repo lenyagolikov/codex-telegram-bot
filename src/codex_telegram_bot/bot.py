@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import secrets
 import tempfile
 import time
@@ -10,6 +11,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from .app_server import AppServerError, CodexAppServer
 from .approvals import approval_path, assess_safe_read_only_approval
@@ -26,16 +28,59 @@ STALLED_TASK_REMINDER_SECONDS = 30 * 60
 STALLED_TASK_CHECK_SECONDS = 60
 AVAILABLE_THREADS_LIMIT = 20
 TELEGRAM_ATTACHMENT_MAX_FILE_BYTES = 20 * 1024 * 1024
+TELEGRAM_OUTBOUND_MAX_FILE_BYTES = 20 * 1024 * 1024
+TELEGRAM_SEND_FILE_TOOL = "telegram_send_file"
 EXTERNAL_THREAD_SOURCE_KINDS = ("cli", "vscode", "exec", "appServer", "unknown")
 SUPPORTED_IMAGE_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+TELEGRAM_PHOTO_SUFFIXES = frozenset({".jpeg", ".jpg", ".png"})
 _MCP_FORM_CANCELLED = object()
 _MCP_FORM_SKIPPED = object()
+_TELEGRAM_FILE_LINK_RE = re.compile(
+    r"(?<!!)\[(?P<label>[^\]\n]+)\]\((?P<target><[^>\n]+>|[^)\n]+)\)"
+)
+TELEGRAM_DYNAMIC_TOOLS = [
+    {
+        "type": "function",
+        "name": TELEGRAM_SEND_FILE_TOOL,
+        "description": (
+            "Send a file created in the current Codex working directory to the "
+            "user's Telegram chat. Use this for presentations, documents, archives, "
+            "and images that the user should receive as an attachment."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute path or path relative to the Codex cwd.",
+                },
+                "caption": {
+                    "type": "string",
+                    "description": "Optional short Telegram caption.",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["auto", "photo", "document"],
+                    "description": (
+                        "auto sends JPEG/PNG images as photos and other files as documents."
+                    ),
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    }
+]
 TELEGRAM_CLIENT_INSTRUCTIONS = """\
 This Codex thread is controlled through a Telegram client. Use the shell,
 filesystem, MCP, and web tools available in the session whenever the task needs
 them. Never ask the user to provide an internal tool-call payload or protocol
 JSON. Ask for input only when the information or decision genuinely has to come
-from the user.
+from the user. When the user should receive a generated image, presentation, or
+other file, call the telegram_send_file tool with its path. If that tool is not
+available in an older thread, include a Markdown link whose target is
+telegram-file:///absolute/path/to/file in the final answer; the Telegram client
+will validate and upload it.
 """
 
 
@@ -52,6 +97,7 @@ class ActiveTurn:
     last_activity_at: float = field(default_factory=time.monotonic)
     progress_item_ids: set[str] = field(default_factory=set)
     attachment_paths: list[Path] = field(default_factory=list)
+    sent_output_paths: set[Path] = field(default_factory=set)
     reminded_for_activity_at: float | None = None
 
     def touch(self) -> None:
@@ -71,6 +117,13 @@ class TelegramAttachment:
     path: Path
     original_name: str
     is_image: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OutboundAttachment:
+    path: Path
+    caption: str
+    mode: str
 
 
 @dataclass(slots=True)
@@ -1284,7 +1337,11 @@ class TelegramCodexBot:
         return params
 
     def _start_thread_params(self) -> dict[str, Any]:
-        return {**self._common_thread_params(), "ephemeral": False}
+        return {
+            **self._common_thread_params(),
+            "ephemeral": False,
+            "dynamicTools": TELEGRAM_DYNAMIC_TOOLS,
+        }
 
     def _resume_thread_params(self, thread_id: str) -> dict[str, Any]:
         return {**self._common_thread_params(), "threadId": thread_id}
@@ -1395,6 +1452,10 @@ class TelegramCodexBot:
         elif not answer:
             answer = "Codex завершил задачу без текстового ответа."
 
+        answer, outbound_attachments = self._prepare_outbound_attachments(
+            answer, active
+        )
+
         persisted_status = {
             "failed": "failed",
             "interrupted": "interrupted",
@@ -1416,10 +1477,30 @@ class TelegramCodexBot:
             f"Задача #{active.task_number} {completion_label}.\n\n{answer}",
             formatted=True,
         )
+        for attachment in outbound_attachments:
+            self._enqueue_file_outbox(active.chat_id, attachment)
 
     def _enqueue_outbox(self, chat_id: int, text: str, *, formatted: bool) -> int:
         message_id = self._state.enqueue_outbox(chat_id, text, formatted=formatted)
         LOGGER.info("Queued Telegram message in outbox; message_id=%d", message_id)
+        self._outbox_wakeup.set()
+        return message_id
+
+    def _enqueue_file_outbox(
+        self, chat_id: int, attachment: OutboundAttachment
+    ) -> int:
+        message_id = self._state.enqueue_outbox_file(
+            chat_id,
+            attachment.path,
+            caption=attachment.caption,
+            mode=attachment.mode,
+        )
+        LOGGER.info(
+            "Queued Telegram file in outbox; message_id=%d name=%s mode=%s",
+            message_id,
+            attachment.path.name,
+            attachment.mode,
+        )
         self._outbox_wakeup.set()
         return message_id
 
@@ -1481,11 +1562,21 @@ class TelegramCodexBot:
 
     async def _deliver_outbox_message(self, message: OutboxMessage) -> bool:
         try:
-            await self._telegram.send_message(
-                message.chat_id,
-                message.text,
-                formatted=message.formatted,
-            )
+            if message.kind == "file":
+                if not message.file_path:
+                    raise TelegramError("Outbox file path is missing")
+                await self._telegram.send_file(
+                    message.chat_id,
+                    Path(message.file_path),
+                    caption=message.text,
+                    as_photo=message.file_mode == "photo",
+                )
+            else:
+                await self._telegram.send_message(
+                    message.chat_id,
+                    message.text,
+                    formatted=message.formatted,
+                )
         except TelegramError as error:
             self._state.mark_outbox_attempt(message.id)
             LOGGER.warning(
@@ -1517,6 +1608,100 @@ class TelegramCodexBot:
             "".join(parts)
             for item_id, parts in active.deltas_by_item.items()
             if item_id not in active.progress_item_ids
+        )
+
+    def _prepare_outbound_attachments(
+        self, answer: str, active: ActiveTurn
+    ) -> tuple[str, list[OutboundAttachment]]:
+        attachments: list[OutboundAttachment] = []
+        failures: list[str] = []
+
+        def replace_link(match: re.Match[str]) -> str:
+            label = match.group("label").strip() or "Файл"
+            target = match.group("target").strip()
+            if target.startswith("<") and target.endswith(">"):
+                target = target[1:-1].strip()
+            parsed = urlparse(target)
+            if parsed.scheme != "telegram-file":
+                return match.group(0)
+            if parsed.netloc not in {"", "localhost"}:
+                failures.append(label)
+                return label
+
+            raw_path = unquote(parsed.path)
+            try:
+                attachment = self._resolve_outbound_attachment(
+                    raw_path,
+                    caption=label,
+                    mode="auto",
+                )
+            except ValueError as error:
+                LOGGER.warning(
+                    "Rejected Telegram output attachment %s: %s",
+                    label,
+                    error,
+                )
+                failures.append(label)
+                return label
+
+            if attachment.path not in active.sent_output_paths:
+                attachments.append(attachment)
+                active.sent_output_paths.add(attachment.path)
+            return f"{label} (файл приложен)"
+
+        sanitized_answer = _TELEGRAM_FILE_LINK_RE.sub(replace_link, answer)
+        if failures:
+            names = ", ".join(f"«{name}»" for name in failures)
+            sanitized_answer += (
+                "\n\nНе удалось приложить "
+                f"{names}: разрешены только обычные файлы до 20 МБ "
+                "внутри рабочей папки Codex."
+            )
+        return sanitized_answer, attachments
+
+    def _resolve_outbound_attachment(
+        self,
+        raw_path: str,
+        *,
+        caption: str,
+        mode: str,
+    ) -> OutboundAttachment:
+        if not raw_path.strip():
+            raise ValueError("path is empty")
+        if mode not in {"auto", "photo", "document"}:
+            raise ValueError("mode must be auto, photo, or document")
+
+        workspace = self._config.codex_cwd.expanduser().resolve(strict=True)
+        candidate = Path(raw_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = workspace / candidate
+        try:
+            path = candidate.resolve(strict=True)
+            relative_path = path.relative_to(workspace)
+        except (OSError, ValueError) as error:
+            raise ValueError("path is outside the Codex working directory") from error
+        if any(part.startswith(".") for part in relative_path.parts):
+            raise ValueError("hidden files and directories are not allowed")
+        if not path.is_file():
+            raise ValueError("path does not point to a regular file")
+        try:
+            size = path.stat().st_size
+        except OSError as error:
+            raise ValueError("file metadata is unavailable") from error
+        if size > TELEGRAM_OUTBOUND_MAX_FILE_BYTES:
+            raise ValueError("file exceeds the 20 MB limit")
+
+        selected_mode = mode
+        if selected_mode == "auto":
+            selected_mode = (
+                "photo" if path.suffix.lower() in TELEGRAM_PHOTO_SUFFIXES else "document"
+            )
+        if selected_mode == "photo" and path.suffix.lower() not in TELEGRAM_PHOTO_SUFFIXES:
+            raise ValueError("photo mode supports only JPEG and PNG files")
+        return OutboundAttachment(
+            path=path,
+            caption=caption.strip()[:1024],
+            mode=selected_mode,
         )
 
     def _register_active(self, active: ActiveTurn) -> None:
@@ -1563,23 +1748,58 @@ class TelegramCodexBot:
         if method == "mcpServer/elicitation/request":
             return await self._handle_mcp_elicitation(params)
         if method == "item/tool/call":
-            LOGGER.warning(
-                "Rejected unavailable dynamic tool %s",
-                params.get("tool") or "<unknown>",
-            )
-            return {
-                "success": False,
-                "contentItems": [
-                    {
-                        "type": "inputText",
-                        "text": (
-                            "This Telegram client does not provide dynamic tools. "
-                            "Retry using a built-in command, MCP, or web tool directly."
-                        ),
-                    }
-                ],
-            }
+            return await self._handle_dynamic_tool_call(params)
         raise AppServerError(f"Unsupported Codex request: {method}")
+
+    async def _handle_dynamic_tool_call(
+        self, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        tool = str(params.get("tool") or "")
+        if tool != TELEGRAM_SEND_FILE_TOOL:
+            LOGGER.warning("Rejected unavailable dynamic tool %s", tool or "<unknown>")
+            return _dynamic_tool_result(
+                False,
+                f"The Telegram client does not provide the {tool or 'requested'} tool.",
+            )
+
+        active = self._find_or_create_active(params)
+        if active is None:
+            return _dynamic_tool_result(False, "No Telegram task owns this Codex turn.")
+        active.touch()
+        arguments = params.get("arguments")
+        if not isinstance(arguments, dict):
+            return _dynamic_tool_result(False, "Tool arguments must be an object.")
+        raw_path = arguments.get("path")
+        caption = arguments.get("caption", "")
+        mode = arguments.get("mode", "auto")
+        if not isinstance(raw_path, str):
+            return _dynamic_tool_result(False, "The path argument must be a string.")
+        if not isinstance(caption, str):
+            return _dynamic_tool_result(False, "The caption argument must be a string.")
+        if not isinstance(mode, str):
+            return _dynamic_tool_result(False, "The mode argument must be a string.")
+
+        try:
+            attachment = self._resolve_outbound_attachment(
+                raw_path,
+                caption=caption,
+                mode=mode,
+            )
+        except ValueError as error:
+            LOGGER.warning("Rejected Telegram output attachment: %s", error)
+            return _dynamic_tool_result(False, str(error))
+
+        if attachment.path in active.sent_output_paths:
+            return _dynamic_tool_result(
+                True,
+                f"{attachment.path.name} was already queued for Telegram delivery.",
+            )
+        self._enqueue_file_outbox(active.chat_id, attachment)
+        active.sent_output_paths.add(attachment.path)
+        return _dynamic_tool_result(
+            True,
+            f"Queued {attachment.path.name} for Telegram delivery.",
+        )
 
     async def _handle_approval_request(
         self, method: str, params: dict[str, Any]
@@ -2394,6 +2614,13 @@ def _safe_attachment_suffix(name: str) -> str:
     if 1 < len(suffix) <= 12 and suffix[1:].isalnum():
         return suffix
     return ".bin"
+
+
+def _dynamic_tool_result(success: bool, text: str) -> dict[str, Any]:
+    return {
+        "success": success,
+        "contentItems": [{"type": "inputText", "text": text}],
+    }
 
 
 def _cleanup_attachment_paths(paths: tuple[Path, ...] | list[Path]) -> None:

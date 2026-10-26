@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 import re
+import secrets
 import socket
 from html import escape
 from http.client import HTTPException, HTTPSConnection
@@ -185,6 +187,90 @@ class TelegramApi:
                 last_message_id = int(result["message_id"])
         return last_message_id
 
+    async def send_file(
+        self,
+        chat_id: int,
+        path: Path,
+        *,
+        caption: str = "",
+        as_photo: bool = False,
+    ) -> int | None:
+        last_error: TelegramError | None = None
+        for attempt in range(3):
+            try:
+                return await asyncio.to_thread(
+                    self._send_file_sync,
+                    chat_id,
+                    path,
+                    caption,
+                    as_photo,
+                )
+            except TelegramError as error:
+                last_error = error
+                if attempt < 2:
+                    await asyncio.sleep(attempt + 1)
+        assert last_error is not None
+        raise last_error
+
+    def _send_file_sync(
+        self,
+        chat_id: int,
+        path: Path,
+        caption: str,
+        as_photo: bool,
+    ) -> int | None:
+        method = "sendPhoto" if as_photo else "sendDocument"
+        file_field = "photo" if as_photo else "document"
+        boundary = f"CodexTelegramBot{secrets.token_hex(16)}"
+        try:
+            file_bytes = path.read_bytes()
+        except OSError as error:
+            raise TelegramError(f"Could not read attachment: {path.name}") from error
+
+        safe_name = path.name.replace('"', "'").replace("\r", "").replace("\n", "")
+        content_type = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
+        parts = [
+            _multipart_field(boundary, "chat_id", str(chat_id)),
+        ]
+        if caption:
+            parts.append(_multipart_field(boundary, "caption", caption))
+        parts.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{file_field}"; '
+                f'filename="{safe_name}"\r\n'
+                f"Content-Type: {content_type}\r\n\r\n"
+            ).encode()
+            + file_bytes
+            + b"\r\n"
+        )
+        parts.append(f"--{boundary}--\r\n".encode("ascii"))
+        request = Request(
+            f"{self._base_url}/{method}",
+            data=b"".join(parts),
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            method="POST",
+        )
+        try:
+            with self._open(request, 90) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except HTTPError as error:
+            raise TelegramError(
+                f"Telegram request {method} failed with HTTP {error.code}"
+            ) from error
+        except (HTTPException, OSError, ValueError) as error:
+            raise TelegramError(
+                f"Telegram request {method} failed: network error"
+            ) from error
+
+        if not body.get("ok"):
+            description = body.get("description", "unknown Telegram error")
+            raise TelegramError(f"Telegram request {method} failed: {description}")
+        result = body.get("result")
+        if isinstance(result, dict) and result.get("message_id") is not None:
+            return int(result["message_id"])
+        return None
+
     async def clear_inline_keyboard(self, chat_id: int, message_id: int) -> None:
         await self.call(
             "editMessageReplyMarkup",
@@ -261,6 +347,14 @@ def split_message(text: str, limit: int = 3900) -> list[str]:
     if remaining:
         chunks.append(remaining)
     return chunks
+
+
+def _multipart_field(boundary: str, name: str, value: str) -> bytes:
+    return (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="{name}"\r\n\r\n'
+        f"{value}\r\n"
+    ).encode()
 
 
 _FENCED_CODE_RE = re.compile(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -32,6 +33,7 @@ class FakeTelegram:
         self.cleared: list[tuple[int, int]] = []
         self.callback_answers: list[tuple[str, str]] = []
         self.downloads: list[tuple[str, Path, int]] = []
+        self.sent_files: list[tuple[int, Path, str, bool]] = []
 
     async def send_message(
         self,
@@ -46,6 +48,19 @@ class FakeTelegram:
         self.sent.append((chat_id, text, reply_markup))
         self.formatted.append(formatted)
         return len(self.sent)
+
+    async def send_file(
+        self,
+        chat_id: int,
+        path: Path,
+        *,
+        caption: str = "",
+        as_photo: bool = False,
+    ) -> int:
+        if self.fail_send:
+            raise TelegramError("simulated network failure")
+        self.sent_files.append((chat_id, path, caption, as_photo))
+        return len(self.sent_files)
 
     async def clear_inline_keyboard(self, chat_id: int, message_id: int) -> None:
         self.cleared.append((chat_id, message_id))
@@ -293,6 +308,30 @@ class FakeState:
         )
         return message_id
 
+    def enqueue_outbox_file(
+        self,
+        chat_id: int,
+        path: Path,
+        *,
+        caption: str,
+        mode: str,
+    ) -> int:
+        message_id = self.next_outbox_id
+        self.next_outbox_id += 1
+        self.outbox.append(
+            OutboxMessage(
+                message_id,
+                chat_id,
+                caption,
+                False,
+                attempts=0,
+                kind="file",
+                file_path=str(path),
+                file_mode=mode,
+            )
+        )
+        return message_id
+
     def get_outbox(self, limit: int = 20) -> list[OutboxMessage]:
         return self.outbox[:limit]
 
@@ -304,6 +343,9 @@ class FakeState:
                 message.text,
                 message.formatted,
                 message.attempts + 1,
+                message.kind,
+                message.file_path,
+                message.file_mode,
             )
             if message.id == message_id
             else message
@@ -323,11 +365,12 @@ def make_bot(
     voice_enabled: bool = False,
     auto_approve: bool = False,
     approvals_reviewer: str = "user",
+    codex_cwd: Path = Path("/tmp"),
 ) -> TelegramCodexBot:
     config = Config(
         telegram_token="not-a-real-token",
         allowed_user_ids=frozenset({USER_ID}),
-        codex_cwd=Path("/tmp"),
+        codex_cwd=codex_cwd,
         codex_bin="codex",
         codex_model=None,
         reasoning_effort=None,
@@ -948,6 +991,11 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Never call those tools", TELEGRAM_CLIENT_INSTRUCTIONS)
         self.assertIn("internal tool-call payload", TELEGRAM_CLIENT_INSTRUCTIONS)
         self.assertIn("JSON", TELEGRAM_CLIENT_INSTRUCTIONS)
+        self.assertEqual(
+            bot._start_thread_params()["dynamicTools"][0]["name"],
+            "telegram_send_file",
+        )
+        self.assertNotIn("dynamicTools", bot._resume_thread_params(THREAD_ID))
 
     async def test_auto_review_is_forwarded_to_started_and_resumed_threads(self) -> None:
         bot = make_bot(approvals_reviewer="auto_review")
@@ -960,7 +1008,7 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
             "auto_review",
         )
 
-    async def test_dynamic_tool_call_returns_retryable_failure(self) -> None:
+    async def test_unknown_dynamic_tool_call_returns_failure(self) -> None:
         bot = make_bot()
 
         result = await bot._handle_codex_request(
@@ -976,7 +1024,113 @@ class TelegramCodexBotTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(result["success"])
         self.assertEqual(result["contentItems"][0]["type"], "inputText")
-        self.assertIn("built-in", result["contentItems"][0]["text"])
+        self.assertIn("does not provide", result["contentItems"][0]["text"])
+
+    async def test_dynamic_tool_queues_workspace_file_for_telegram(self) -> None:
+        telegram = FakeTelegram()
+        state = FakeState()
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            presentation = workspace / "review.pptx"
+            presentation.write_bytes(b"presentation")
+            bot = make_bot(
+                telegram=telegram,
+                state=state,
+                codex_cwd=workspace,
+            )
+            bot._register_active(ActiveTurn(CHAT_ID, THREAD_ID, TURN_ID))
+
+            result = await bot._handle_codex_request(
+                "item/tool/call",
+                {
+                    "threadId": THREAD_ID,
+                    "turnId": TURN_ID,
+                    "callId": "call-file",
+                    "tool": "telegram_send_file",
+                    "arguments": {
+                        "path": "review.pptx",
+                        "caption": "Презентация",
+                        "mode": "auto",
+                    },
+                },
+            )
+
+            self.assertTrue(result["success"])
+            self.assertEqual(len(state.outbox), 1)
+            queued = state.outbox[0]
+            self.assertEqual(queued.kind, "file")
+            self.assertEqual(queued.file_path, str(presentation.resolve()))
+            self.assertEqual(queued.file_mode, "document")
+            self.assertTrue(await bot._deliver_outbox_message(queued))
+
+        self.assertEqual(
+            telegram.sent_files,
+            [(CHAT_ID, presentation.resolve(), "Презентация", False)],
+        )
+
+    async def test_dynamic_tool_rejects_file_outside_workspace(self) -> None:
+        state = FakeState()
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            workspace.mkdir()
+            outside = Path(directory) / "secret.txt"
+            outside.write_text("secret", encoding="utf-8")
+            bot = make_bot(state=state, codex_cwd=workspace)
+            bot._register_active(ActiveTurn(CHAT_ID, THREAD_ID, TURN_ID))
+
+            result = await bot._handle_codex_request(
+                "item/tool/call",
+                {
+                    "threadId": THREAD_ID,
+                    "turnId": TURN_ID,
+                    "callId": "call-file",
+                    "tool": "telegram_send_file",
+                    "arguments": {"path": str(outside)},
+                },
+            )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(state.outbox, [])
+        self.assertIn("outside", result["contentItems"][0]["text"])
+
+    async def test_final_telegram_file_link_queues_photo_after_answer(self) -> None:
+        state = FakeState()
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            image = workspace / "result.png"
+            image.write_bytes(b"png")
+            bot = make_bot(state=state, codex_cwd=workspace)
+            bot._register_active(ActiveTurn(CHAT_ID, THREAD_ID, TURN_ID))
+
+            await bot._handle_codex_notification(
+                "turn/completed",
+                {
+                    "threadId": THREAD_ID,
+                    "turn": {
+                        "id": TURN_ID,
+                        "status": "completed",
+                        "items": [
+                            {
+                                "id": "final-file",
+                                "type": "agentMessage",
+                                "phase": "final_answer",
+                                "text": (
+                                    "Готово: [скриншот]"
+                                    f"(telegram-file://{image})"
+                                ),
+                            }
+                        ],
+                    },
+                },
+            )
+
+            self.assertEqual(len(state.outbox), 2)
+            self.assertEqual(state.outbox[0].kind, "message")
+            self.assertNotIn("telegram-file:", state.outbox[0].text)
+            self.assertIn("файл приложен", state.outbox[0].text)
+            self.assertEqual(state.outbox[1].kind, "file")
+            self.assertEqual(state.outbox[1].file_path, str(image.resolve()))
+            self.assertEqual(state.outbox[1].file_mode, "photo")
 
     async def test_mcp_url_elicitation_accepts_callback(self) -> None:
         telegram = FakeTelegram()

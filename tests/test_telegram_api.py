@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from http.client import RemoteDisconnected
-from unittest.mock import AsyncMock, Mock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, Mock
 from urllib.error import HTTPError
 
 from codex_telegram_bot.telegram_api import (
@@ -94,6 +96,48 @@ class TelegramApiTests(unittest.IsolatedAsyncioTestCase):
                 "link_preview_options": {"is_disabled": True},
             },
         )
+
+    def test_file_upload_uses_multipart_document_request(self) -> None:
+        api = TelegramApi("not-a-real-token")
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b'{"ok": true, "result": {"message_id": 43}}'
+        api._open = Mock(return_value=response)  # type: ignore[method-assign]
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.pptx"
+            path.write_bytes(b"presentation")
+            message_id = api._send_file_sync(
+                101,
+                path,
+                "Презентация",
+                False,
+            )
+
+        self.assertEqual(message_id, 43)
+        request = api._open.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("/sendDocument"))
+        self.assertIn(b'name="chat_id"', request.data)
+        self.assertIn(b'name="document"; filename="report.pptx"', request.data)
+        self.assertIn("Презентация".encode(), request.data)
+        self.assertIn(b"presentation", request.data)
+
+    def test_photo_upload_uses_photo_endpoint(self) -> None:
+        api = TelegramApi("not-a-real-token")
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = b'{"ok": true, "result": {"message_id": 44}}'
+        api._open = Mock(return_value=response)  # type: ignore[method-assign]
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.png"
+            path.write_bytes(b"image")
+            message_id = api._send_file_sync(101, path, "", True)
+
+        self.assertEqual(message_id, 44)
+        request = api._open.call_args.args[0]
+        self.assertTrue(request.full_url.endswith("/sendPhoto"))
+        self.assertIn(b'name="photo"; filename="result.png"', request.data)
 
 
 if __name__ == "__main__":

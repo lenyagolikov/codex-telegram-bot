@@ -26,6 +26,65 @@ class StateStoreOutboxTests(unittest.TestCase):
         self.assertEqual(messages[0].text, "**Готово**")
         self.assertTrue(messages[0].formatted)
         self.assertEqual(messages[0].attempts, 0)
+        self.assertEqual(messages[0].kind, "message")
+        self.assertIsNone(messages[0].file_path)
+
+    def test_file_outbox_survives_store_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "state.sqlite3"
+            presentation = root / "result.pptx"
+            presentation.write_bytes(b"presentation")
+            state = StateStore(path)
+            message_id = state.enqueue_outbox_file(
+                101,
+                presentation,
+                caption="Результат",
+                mode="document",
+            )
+            state.close()
+
+            reopened = StateStore(path)
+            messages = reopened.get_outbox()
+            reopened.close()
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].id, message_id)
+        self.assertEqual(messages[0].kind, "file")
+        self.assertEqual(messages[0].file_path, str(presentation))
+        self.assertEqual(messages[0].file_mode, "document")
+        self.assertEqual(messages[0].text, "Результат")
+
+    def test_existing_outbox_schema_gets_file_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.sqlite3"
+            connection = sqlite3.connect(path)
+            connection.execute(
+                """
+                CREATE TABLE outbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    formatted INTEGER NOT NULL DEFAULT 0,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    last_attempt_at TEXT
+                )
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            state = StateStore(path)
+            columns = {
+                str(row[1])
+                for row in state._connection.execute(
+                    "PRAGMA table_info(outbox)"
+                ).fetchall()
+            }
+            state.close()
+
+        self.assertTrue({"kind", "file_path", "file_mode"}.issubset(columns))
 
     def test_attempt_and_delete_are_persisted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
